@@ -1,0 +1,9 @@
+{
+  "name": "pngle",
+  "version": "1.0.0",
+  "description": "PNGLE - PNG Loader for Embedding (streaming PNG decoder). Vendored from https://github.com/kikuchan/pngle. Both pngle.c and miniz.c must be compiled (default source filter).",
+  "keywords": ["png", "decoder", "streaming", "embedded"],
+  "license": "MIT",
+  "frameworks": "*",
+  "platforms": "*"
+}

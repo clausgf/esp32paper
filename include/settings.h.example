@@ -1,0 +1,44 @@
+/**
+ * esp32paper — local, secret settings.
+ *
+ * Copy this file to `include/settings.h` (which is git-ignored) and fill in
+ * your values. Each value is only defined here if it was not already provided
+ * via build_flags / secrets.ini, so either mechanism works — see the "Secrets"
+ * section in README.md.
+ *
+ * NOTE: whichever method you use, these values are compiled into the firmware
+ * binary (flash). Keeping them out of git protects the source, not the .bin.
+ */
+
+#pragma once
+
+// --- WiFi ------------------------------------------------------------------
+#ifndef WIFI_SSID
+#define WIFI_SSID     "my-wifi"
+#endif
+#ifndef WIFI_PASSWORD
+#define WIFI_PASSWORD "my-password"
+#endif
+
+// --- nice4iot server -------------------------------------------------------
+// Base URL of the nice4iot REST API (note the trailing "/api", no slash).
+#ifndef IOT_API_URL
+#define IOT_API_URL   "http://192.168.178.20:8000/api"
+#endif
+// nice4iot project this device belongs to (must have the epaper extension
+// enabled and a screen assigned to this device).
+#ifndef IOT_PROJECT
+#define IOT_PROJECT   "my-project"
+#endif
+// One-time provisioning token issued by nice4iot for this project. It is
+// exchanged for a short-lived device token on first boot and then stored in
+// NVRAM (setProvisioningTokenIfEmpty), so it is only needed for first-time
+// provisioning — you may blank it on later builds.
+#ifndef IOT_PROVISIONING_TOKEN
+#define IOT_PROVISIONING_TOKEN "P-102-FX61O...=="
+#endif
+
+// --- optional: pin the server's TLS certificate for https ------------------
+// #ifndef IOT_CA_CERT
+// #define IOT_CA_CERT R"EOF(-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----\n)EOF"
+// #endif
