@@ -202,17 +202,17 @@ void setup()
     // --- connect WiFi, init subsystems, sync NTP; panics on undervoltage ---
     if (!iot.begin(WIFI_SSID, WIFI_PASSWORD))
     {
-        failScreen(ErrorIcon::NoWifi, "Kein WLAN",
-                   "Keine Verbindung zum WLAN oder Zeit-Sync fehlgeschlagen. "
-                   "Neuer Versuch in Kürze.", retry_s);
+        failScreen(ErrorIcon::NoWifi, "No WiFi",
+                   "Could not join the WiFi network\nor sync the time (NTP).\n\n"
+                   "Retrying shortly.", retry_s);
     }
     unsigned long connect_ms = millis() - tBoot; // WiFi connect + NTP sync
 
     if (!api.updateProvisioningOk())
     {
-        failScreen(ErrorIcon::Warning, "Provisionierung fehlgeschlagen",
-                   "Der Server hat die Anmeldung abgelehnt. Provisioning-Token "
-                   "und Projektstatus prüfen.", retry_s);
+        failScreen(ErrorIcon::Warning, "Provisioning failed",
+                   "The server rejected this device.\n\n"
+                   "Check the provisioning token\nand the project status.", retry_s);
     }
 
     // --- only the essentials before the refresh (minimise time-to-refresh) ---
@@ -303,15 +303,15 @@ void setup()
         {
             // invalid PNG: housekeeping did not run, WiFi still up for the error
             displayed = false;
-            failScreen(ErrorIcon::Warning, "Bildfehler",
-                       "Das empfangene Bild ist kein gültiges PNG.", retry_s);
+            failScreen(ErrorIcon::Warning, "Image error",
+                       "The received image\nis not a valid PNG.", retry_s);
         }
     }
     else
     {
-        failScreen(ErrorIcon::Warning, "Kein Bild",
-                   String("Server-Antwort: ") + img.status +
-                   ". Bildschirm zugewiesen?", retry_s);
+        failScreen(ErrorIcon::Warning, "No image",
+                   String("Server responded: ") + img.status + ".\n\n"
+                   "Is a screen assigned\nto this device?", retry_s);
     }
 
     // Buffer this cycle's end-of-cycle phase durations in RTC RAM; they are only

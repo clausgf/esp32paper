@@ -11,6 +11,7 @@
 
 #include <SPI.h>
 #include <limits.h>
+#include <math.h>
 
 // --- automatic page height from a RAM budget ------------------------------
 // GxEPD2 renders in pages: it keeps a page buffer of `page_height` rows and we
@@ -259,13 +260,24 @@ bool DisplayRenderer::renderImage(const uint8_t *png, size_t len,
 
 void DisplayRenderer::initPanel_()
 {
-    // GxEPD2::init() sets up the default SPI pins, so remap the VSPI bus to the
-    // Waveshare driver board's pins *after* init() (mirrors the reference
-    // epaper-esp32 ordering — reversing it lets init() clobber the pins).
-    gx.init(/*serial_diag_bitrate*/ 0, /*initial*/ true, /*reset_duration*/ 2,
-            /*pulldown_rst_mode*/ false);
+    // Configure the control pins as outputs up front. GxEPD2's init()/_reset()
+    // deliberately pre-set them with digitalWrite() *before* their own pinMode()
+    // ("less glitch"); arduino-esp32 3.x logs that as an "IO N is not set as
+    // GPIO" error and skips the pre-set. Doing pinMode() here first makes those
+    // writes valid and silences the (otherwise harmless) errors.
+    pinMode(EPD_CS, OUTPUT);
+    pinMode(EPD_DC, OUTPUT);
+    pinMode(EPD_RST, OUTPUT);
+
+    // Remap the VSPI bus to the board's pins *before* gx.init(): GxEPD2's init()
+    // calls SPI.begin() internally, which early-returns once the bus is up, so
+    // our pins are kept for the data transfers. (SPI.begin attaches SCK/MISO/
+    // MOSI only, never the CS pin, so CS stays a plain GPIO for GxEPD2.)
     SPI.end();
     SPI.begin(EPD_SCK, EPD_MISO, EPD_MOSI, EPD_CS);
+
+    gx.init(/*serial_diag_bitrate*/ 0, /*initial*/ true, /*reset_duration*/ 2,
+            /*pulldown_rst_mode*/ false);
     gx.setRotation(_rotation);
     gx.setTextColor(GxEPD_BLACK);
 }
@@ -348,21 +360,15 @@ void DisplayRenderer::drawWifi_(int x, int y, const DisplayStatus &st)
 // Full-screen error page
 // ***************************************************************************
 
-// Print `text` centered on `y`, word-wrapping to fit `maxWidth`. Returns the
-// y just below the printed block.
-static int printWrappedCentered(int y, int maxWidth, uint8_t textSize,
-                                const String &text)
+// Word-wrap one segment (no '\n') to `maxWidth`, printing each line centered.
+static int printSegmentCentered(int y, int maxWidth, int lineH, const String &seg)
 {
-    gx.setTextSize(textSize);
-    gx.setTextColor(GxEPD_BLACK);
-    int lineH = 8 * textSize + 4;
-
     String line;
-    int start = 0;
-    while (start <= (int)text.length())
+    int s = 0, m = seg.length();
+    while (s <= m)
     {
-        int sp = text.indexOf(' ', start);
-        String word = (sp < 0) ? text.substring(start) : text.substring(start, sp);
+        int sp = seg.indexOf(' ', s);
+        String word = (sp < 0) ? seg.substring(s) : seg.substring(s, sp);
         String cand = line.length() ? line + " " + word : word;
 
         int16_t bx, by; uint16_t bw, bh;
@@ -380,7 +386,7 @@ static int printWrappedCentered(int y, int maxWidth, uint8_t textSize,
             line = cand;
         }
         if (sp < 0) break;
-        start = sp + 1;
+        s = sp + 1;
     }
     if (line.length())
     {
@@ -389,6 +395,32 @@ static int printWrappedCentered(int y, int maxWidth, uint8_t textSize,
         gx.setCursor((gx.width() - bw) / 2, y);
         gx.print(line);
         y += lineH;
+    }
+    return y;
+}
+
+// Print `text` centered on `y`, honouring '\n' as a hard line break (so "\n\n"
+// yields a blank line / paragraph gap) and word-wrapping each line to
+// `maxWidth`. Returns the y just below the printed block.
+static int printWrappedCentered(int y, int maxWidth, uint8_t textSize,
+                                const String &text)
+{
+    gx.setTextSize(textSize);
+    gx.setTextColor(GxEPD_BLACK);
+    int lineH = 8 * textSize + 4;
+
+    int start = 0, n = text.length();
+    while (start <= n)
+    {
+        int nl = text.indexOf('\n', start);
+        int end = (nl < 0) ? n : nl;
+        String seg = text.substring(start, end);
+        if (seg.length() == 0)
+            y += lineH; // blank line for a paragraph gap
+        else
+            y = printSegmentCentered(y, maxWidth, lineH, seg);
+        if (nl < 0) break;
+        start = nl + 1;
     }
     return y;
 }
@@ -404,21 +436,46 @@ static void drawWarningIcon(int cx, int cy, int size)
     gx.fillRect(cx - barW / 2, botY - size / 6, barW, barW, GxEPD_WHITE);
 }
 
+// Thick arc band (radii rInner..rOuter) from a0..a1 degrees; 0° = east, angles
+// increase clockwise in screen coordinates (y points down).
+static void drawArcBand(int cx, int cy, int rInner, int rOuter,
+                        int a0deg, int a1deg, uint16_t color)
+{
+    int steps = (a1deg - a0deg) * 3;
+    if (steps < 24) steps = 24;
+    for (int s = 0; s <= steps; s++)
+    {
+        double a = (a0deg + (double)(a1deg - a0deg) * s / steps) * DEG_TO_RAD;
+        double ca = cos(a), sa = sin(a);
+        for (int r = rInner; r <= rOuter; r++)
+            gx.drawPixel(cx + (int)lround(r * ca), cy + (int)lround(r * sa), color);
+    }
+}
+
 static void drawNoWifiIcon(int cx, int cy, int size)
 {
-    // Three concentric wifi arcs + base dot, then a slash across.
-    int base = cy + size / 3;
+    // WiFi "fan": a base dot with three arcs opening upward (centred on 270°),
+    // crossed by a bold diagonal with a white halo so the slash stays crisp
+    // where it passes over the black arcs.
+    int apexY = cy + size / 3;                 // fan origin (bottom)
+    const int A0 = 270 - 52, A1 = 270 + 52;    // ~104° fan pointing up
+    int band = max(2, size / 16);              // arc thickness
+    int step = max(band + size / 10, size / 6);
     for (int i = 1; i <= 3; i++)
     {
-        int r = (size / 3) * i / 3 + size / 6;
-        for (int t = 0; t < 3; t++) // thicken the arc
-            gx.drawCircleHelper(cx, base, r + t, 0x03, GxEPD_BLACK); // top quadrants
+        int r = i * step;
+        drawArcBand(cx, apexY, r, r + band, A0, A1, GxEPD_BLACK);
     }
-    gx.fillCircle(cx, base, max(2, size / 20), GxEPD_BLACK);
-    int s = size / 2;
-    gx.drawLine(cx - s, cy - s, cx + s, cy + s, GxEPD_BLACK);
-    gx.drawLine(cx - s, cy - s + 1, cx + s, cy + s + 1, GxEPD_BLACK);
-    gx.drawLine(cx - s + 1, cy - s, cx + s + 1, cy + s, GxEPD_BLACK);
+    gx.fillCircle(cx, apexY, max(2, size / 12), GxEPD_BLACK);
+
+    // Diagonal slash (perpendicular offsets give uniform thickness). Draw the
+    // white halo first (wider), then the black ink on top (narrower).
+    int s = (size * 62) / 100;
+    int halo = size / 14 + 2, ink = size / 28 + 1;
+    for (int o = -halo; o <= halo; o++)
+        gx.drawLine(cx - s - o, cy - s + o, cx + s - o, cy + s + o, GxEPD_WHITE);
+    for (int o = -ink; o <= ink; o++)
+        gx.drawLine(cx - s - o, cy - s + o, cx + s - o, cy + s + o, GxEPD_BLACK);
 }
 
 void DisplayRenderer::showError(ErrorIcon icon, const String &title,
