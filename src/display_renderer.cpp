@@ -431,9 +431,13 @@ static void drawWarningIcon(int cx, int cy, int size)
     int half = size / 2;
     int topY = cy - half, botY = cy + half;
     gx.fillTriangle(cx, topY, cx - half, botY, cx + half, botY, GxEPD_BLACK);
-    int barW = max(3, size / 12);
-    gx.fillRect(cx - barW / 2, cy - half / 3, barW, half, GxEPD_WHITE);
-    gx.fillRect(cx - barW / 2, botY - size / 6, barW, barW, GxEPD_WHITE);
+    int barW = max(2, size / 8);
+    int dotSize = max(2, size / 6);
+    int gap = max(1, size / 12);
+    int startY = topY + dotSize + 2 * gap;
+    int totalH = botY - startY - gap;
+    gx.fillRect(cx - barW / 2, startY, barW, totalH - dotSize - gap/2, GxEPD_WHITE);
+    gx.fillRect(cx - dotSize / 2, botY - gap - dotSize, dotSize, dotSize, GxEPD_WHITE);
 }
 
 // Thick arc band (radii rInner..rOuter) from a0..a1 degrees; 0° = east, angles

@@ -3,6 +3,7 @@
 .vscode/c_cpp_properties.json
 .vscode/launch.json
 .vscode/ipch/
+.vscode/extensions.json
 
 # local secrets — copied from the *.example files, never commit these
 include/settings.h
