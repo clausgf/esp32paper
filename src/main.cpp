@@ -177,9 +177,22 @@ void setup()
     // --- configure API access to the nice4iot server ---
     api.setApiUrl(IOT_API_URL);
     api.setProjectName(IOT_PROJECT);
-    api.setProvisioningTokenIfEmpty(IOT_PROVISIONING_TOKEN);
-#ifdef IOT_CA_CERT
+    // Set the provisioning token unconditionally (settings.h / build flags are
+    // the single source of truth) so an updated token overwrites a stale one
+    // left in NVS — setProvisioningTokenIfEmpty() would keep the old one, a
+    // common "provisioning fails after I changed the token" trap. Only skip when
+    // deliberately blanked, to keep re-provisioning working from the stored one.
+    // setProvisioningToken() writes NVS only when the value actually changed.
+    if (strlen(IOT_PROVISIONING_TOKEN) > 0)
+        api.setProvisioningToken(IOT_PROVISIONING_TOKEN);
+    // TLS for an https:// API URL: arduino4iot creates a bare WiFiClientSecure,
+    // so without a CA cert or setCertInsecure() the handshake fails ("connection
+    // refused"/status=-1). Provide the CA to verify the server (recommended),
+    // or opt into unverified TLS for a home lab. (No-op for http:// URLs.)
+#if defined(IOT_CA_CERT)
     api.setCACert(IOT_CA_CERT);
+#elif defined(IOT_TLS_INSECURE)
+    api.setCertInsecure(); // encrypted but UNVERIFIED — do not use in production
 #endif
 
     // --- battery + status LED (must be set before iot.begin()) ---

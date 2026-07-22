@@ -38,7 +38,18 @@
 #define IOT_PROVISIONING_TOKEN "P-102-FX61O...=="
 #endif
 
-// --- optional: pin the server's TLS certificate for https ------------------
+// --- TLS (only relevant when IOT_API_URL is https://) ----------------------
+// A WiFiClientSecure needs to trust the server, or the handshake fails with
+// "connection refused" / status=-1. Choose exactly ONE:
+//
+// (a) Recommended: pin the server's CA certificate so its identity is verified.
 // #ifndef IOT_CA_CERT
-// #define IOT_CA_CERT R"EOF(-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----\n)EOF"
+// #define IOT_CA_CERT R"EOF(-----BEGIN CERTIFICATE-----
+// ...
+// -----END CERTIFICATE-----
+// )EOF"
 // #endif
+//
+// (b) Home lab / quick bring-up: skip verification (encrypted but the server
+//     identity is NOT checked — do not use in production).
+// #define IOT_TLS_INSECURE 1
