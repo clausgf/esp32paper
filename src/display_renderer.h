@@ -39,8 +39,20 @@ enum class ErrorIcon
 class DisplayRenderer
 {
 public:
+    // Select the active panel by id (see src/panels.h). Records the choice;
+    // the driver is created lazily on the first draw. An unknown/empty id keeps
+    // the previous choice, falling back to the compiled-in default. Must be set
+    // before the driver is created (i.e. before the first render/error screen).
+    void setPanel(const String &id);
+
     // Panel rotation (GxEPD2 0..3), applied on the next draw.
     void setRotation(int rotation) { _rotation = rotation; }
+
+    // nicepaper color_model of the active panel (bw/bwr/e6/c7).
+    String colorModel() const { return _colorModel; }
+    // Active panel id, and the comma-separated list of compiled-in panels.
+    String activePanel() const { return _panelId; }
+    String supportedPanels() const;
 
     // Decode the in-memory PNG and refresh the panel (paged), adding the
     // status overlay. Returns false if the PNG is invalid (panel untouched).
@@ -69,12 +81,15 @@ public:
     uint32_t lastRefreshMs() const { return _lastRefreshMs; }
 
 private:
-    void initPanel_();                           // GxEPD2 init + SPI remap
+    void initPanel_();                           // create driver + SPI + init
+    void applyPanel_(const char *id);            // set id/colorModel/colorMode
     void drawOverlay_(const DisplayStatus &st);  // WiFi + battery, top-right
     void drawBattery_(int x, int y, const DisplayStatus &st);
     void drawWifi_(int x, int y, const DisplayStatus &st);
 
     int _rotation = 0;
+    String _panelId;                 // active panel id ("" until resolved)
+    String _colorModel = "bw";       // nicepaper color_model of the active panel
     uint32_t _lastDecodeTransferMs = 0;
     uint32_t _lastRefreshMs = 0;
 };

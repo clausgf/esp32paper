@@ -47,9 +47,10 @@ slow refresh:
 
 The schedule lives on the server: nicepaper's `max-age` from step 4 becomes the
 next sleep duration. An unchanged screen returns `304` — no redraw (housekeeping
-then runs inline). Serious failures (no WiFi/NTP, provisioning rejected,
-no/invalid image) show a **full-screen error page** and retry after
-`error_retry_s`.
+then runs inline). Serious failures show a **full-screen error page** and retry
+after `error_retry_s`; the message matches the cause — no WiFi vs. failed NTP,
+no server connection vs. provisioning rejected (classified from arduino4iot's
+typed `IotResult`), or a missing/invalid image.
 
 ## Getting started
 
@@ -65,27 +66,39 @@ pio run -t upload
 pio device monitor
 ```
 
-### Panel selection
+### Panels
 
-Default is **4.2" b/w**. Pick exactly one panel via `build_flags` in
-`platformio.ini`, and set the matching `EPAPER_COLOR_MODEL`:
+One firmware supports many panels. Enable any subset via `build_flags` in
+`platformio.ini` (opt-in — all enabled drivers are compiled in); the **active
+panel is chosen at runtime** from `config.json` `"panel"` → NVS → default. Only
+the selected panel allocates its page buffer, so unused ones cost flash, not RAM.
+The `color_model` sent to nicepaper is derived from the panel.
 
-| build flag             | panel                        | GxEPD2 driver             | color_model |
-|------------------------|------------------------------|---------------------------|-------------|
-| `EPAPER_PANEL_42_BW`   | 4.2" 400×300 b/w             | `GxEPD2_420`              | `bw`        |
-| `EPAPER_PANEL_75_BW`   | 7.5" 800×480 b/w             | `GxEPD2_750_T7`           | `bw`        |
-| `EPAPER_PANEL_75_BWR`  | 7.5" 800×480 b/w/red         | `GxEPD2_750c_Z90`         | `bwr`       |
-| `EPAPER_PANEL_73_E6`   | 7.3" 800×480 Spectra 6 (E6)  | `GxEPD2_730c_GDEP073E01`  | `e6`        |
+| build flag             | panel id          | panel                        | GxEPD2 driver             | color_model |
+|------------------------|-------------------|------------------------------|---------------------------|-------------|
+| `EPAPER_PANEL_42_BW`   | `gxepd2_420`      | 4.2" 400×300 b/w             | `GxEPD2_420`              | `bw`        |
+| `EPAPER_PANEL_75_BW`   | `gxepd2_750_t7`   | 7.5" 800×480 b/w             | `GxEPD2_750_T7`           | `bw`        |
+| `EPAPER_PANEL_75_BWR`  | `gxepd2_750c_z90` | 7.5" 800×480 b/w/red         | `GxEPD2_750c_Z90`         | `bwr`       |
+| `EPAPER_PANEL_73_E6`   | `gxepd2_073e01`   | 7.3" 800×480 Spectra 6 (E6)  | `GxEPD2_730c_GDEP073E01`  | `e6`        |
+| `EPAPER_PANEL_73_7C`   | `gxepd2_acep_730` | 7.3" 800×480 ACeP 7-colour   | `GxEPD2_730c_ACeP_730`    | `c7`        |
 
-Pins are identical for all Waveshare HATs (`src/config.h`). Spectra 6 renders 6
-colours (black/white/red/yellow/blue/green); its 192 KB bitmap makes paging
-mandatory — handled automatically (see [Memory & paging](#memory--paging)).
+Set the panel per device in nice4iot's `config.json` (`"panel": "gxepd2_073e01"`);
+it is persisted in NVS so later boots (and pre-config error screens) use the
+right geometry. `EPAPER_DEFAULT_PANEL` sets the first-boot default (else the
+first enabled panel). Pins are identical for all Waveshare HATs (`src/config.h`).
+Requires `-DENABLE_GxEPD2_GFX=1` so the drivers share a common base (see
+`src/panels.h`). Spectra 6 renders 6 colours, ACeP 7 (incl. orange); their 192 KB
+bitmaps make paging mandatory — handled automatically
+(see [Memory & paging](#memory--paging)). The runtime factory (`GxEPD2_GFX*`)
+adds the panels' code to flash but no RAM for unused ones.
 
 ### Secrets
 
 WiFi credentials and the provisioning token are **never committed** (`.gitignore`
 excludes them; a missing one is a compile `#error`). The token is only needed for
-first provisioning — arduino4iot then stores a device token in NVRAM. Provide
+first provisioning — arduino4iot seeds it into NVRAM once (`setProvisioningTokenIfEmpty`)
+and thereafter uses the stored device token, so re-flashing does not re-provision.
+To replace a *wrong* token later, erase NVS once (`pio run -t erase`). Provide
 them via either:
 
 - **`include/settings.h`** (default): `cp include/settings.h.example
@@ -96,6 +109,11 @@ them via either:
 Either way the values end up in the firmware `.bin` — keeping them out of git
 protects the source, not the binary.
 
+**TLS** (only when `IOT_API_URL` is `https://`): a `WiFiClientSecure` must trust
+the server or the handshake fails (`status=-1`). Set exactly one in `settings.h`:
+`IOT_CA_CERT` (the server's CA, verified — recommended) or `IOT_TLS_INSECURE 1`
+(encrypted but unverified — home lab only). See `settings.h.example`.
+
 ### Runtime config (`config.json`)
 
 Served by nice4iot at `file/{project}/{device}/config.json`; all keys optional:
@@ -104,7 +122,7 @@ Served by nice4iot at `file/{project}/{device}/config.json`; all keys optional:
 |----------------|--------|---------------------------------------------------|---------|
 | `log_level`    | int    | library default                                   | arduino4iot log verbosity |
 | `sleep_s`      | int    | library default                                   | fallback sleep if no `max-age` |
-| `color_model`  | string | `bw`                                              | nicepaper palette |
+| `panel`        | string | (NVS / build default)                             | panel id (see [Panels](#panels)); persisted in NVS, derives `color_model` |
 | `image_path`   | string | `ext/epaper/{project}/screens/{device}/image.png` | image API path template |
 | `min_sleep_s`  | int    | `300`                                             | lower clamp on `max-age` sleep |
 | `max_sleep_s`  | int    | `86400`                                           | upper clamp on `max-age` sleep |
@@ -119,7 +137,8 @@ Everything flows through nice4iot:
   (the arduino4iot standard set).
 - **App telemetry** (`kind = "epaper"`), sent in the refresh overlap. Live:
   `connect_ms`, `net_ms`, `active_ms`, `image_status`, `image_bytes`,
-  `image_maxage_s`, `displayed`, `heap_free`, `sleep_s`. From the previous cycle
+  `image_maxage_s`, `displayed`, `heap_free`, `sleep_s`, `panel` (active id),
+  `panels` (compiled-in panel ids). From the previous cycle
   (buffered in RTC RAM, since they only complete after the refresh):
   `last_cycle_ms`, `last_refresh_ms`, `last_decode_transfer_ms`.
 - **Logging** — buffered, flushed in the overlap before WiFi off.
@@ -139,14 +158,18 @@ default 16 KB), so every panel is safe automatically:
 | 7.5" b/w 800×480 | 48 KB | 100 | 4 | 16 KB | ~92 KB |
 | 7.5" b/w/red 800×480 | 96 KB (2 planes) | 200 | 6 | 16 KB | ~92 KB |
 | 7.3" Spectra 6 800×480 | 192 KB (4 bpp) | 400 | 12 | 16 KB | ~92 KB |
+| 7.3" ACeP 7c 800×480 | 192 KB (4 bpp) | 400 | 12 | 16 KB | ~92 KB |
 
 ¹ PNG + pngle + page buffer, comfortably under ~180 KB.
 
-GxEPD2's page buffer is a static, template-sized member in internal DRAM (PSRAM
-can't back it), so it is fixed at build time — hence the compile-time budget plus
-a runtime free-heap guard that refuses to decode below a safe threshold (and
-reports `heap_free` via telemetry). Firmware size (this build, `min_spiffs.csv`
-partitions): flash ~62 % of a 1.875 MB OTA slot, static RAM ~20 %.
+GxEPD2's page buffer is an instance member whose `page_height` is a compile-time
+template parameter (internal DRAM; PSRAM can't back it), so it can't be resized
+at runtime — hence the compile-time byte budget plus a runtime free-heap guard
+that refuses to decode below a safe threshold (and reports `heap_free` via
+telemetry). In the multi-panel build only the runtime-selected panel is `new`'d,
+so **only its buffer** uses RAM. Firmware size (this build, all five panels,
+`min_spiffs.csv` partitions): flash ~68 % of a 1.875 MB OTA slot, static RAM
+~15 % (the page buffer lives on the heap now, not `.bss`).
 
 ## Design notes
 
@@ -165,12 +188,20 @@ partitions): flash ~62 % of a 1.875 MB OTA slot, static RAM ~20 %.
   single biggest energy saving.
 - **Paged rendering, budget-sized** — see [Memory & paging](#memory--paging); a
   validation decode runs first so a corrupt PNG never reaches the panel.
-- **Colour mapping matches the panel** — luma threshold (b/w), red test
-  (b/w/red), nearest-of-6 (E6); nicepaper already quantized, so no dithering.
+- **Multi-panel, runtime-selected** — all enabled panels compile in; a factory
+  creates the one named by `config.json`/NVS/default as a `GxEPD2_GFX*` (needs
+  `-DENABLE_GxEPD2_GFX=1`). Only the selected panel's page buffer is heap-
+  allocated, so unused panels cost flash but no RAM (see `src/panels.h`).
+- **Colour mapping matches the panel** — chosen at runtime from the panel:
+  luma threshold (b/w), red test (b/w/red), nearest-of-6 (E6) or nearest-of-7
+  (ACeP c7); nicepaper already quantized, so no dithering.
 - **Client-side status overlay** — WiFi bars + battery gauge (live device state
   the server can't know), drawn top-right over every image.
 - **Full-screen error pages** — icon + message (with `\n` paragraph breaks),
-  retry after `error_retry_s`, so a blank/frozen panel never hides a fault.
+  retry after `error_retry_s`, so a blank/frozen panel never hides a fault. The
+  cause is classified from arduino4iot's typed `IotResult` — transport/TLS vs.
+  HTTP 403 vs. no-token vs. malformed body — so the screen is specific, not
+  generic (no reachability guesswork).
 - **Energy** — minimal work before the refresh; OTA/telemetry/logs overlap the
   refresh via GxEPD2's busy callback (run-once, with a fallback), then WiFi off;
   sleep duration computed beforehand. Watchdog widened to 90 s for the long
@@ -180,7 +211,7 @@ partitions): flash ~62 % of a 1.875 MB OTA slot, static RAM ~20 %.
   `decode_transfer_ms`/`cycle_ms` complete only after the refresh, so they ship
   next cycle as `last_*` instead of keeping WiFi on; the refresh start is
   timestamped from GxEPD2's first busy-callback.
-- **Compile-time panel selection** (`EPAPER_PANEL_*`), **pioarduino platform**
+- **Opt-in panel list** (`EPAPER_PANEL_*`), **pioarduino platform**
   (arduino4iot needs arduino-esp32 3.x), **deep-sleep-first** (`loop()` unused;
   battery undervoltage → `iot.panic()`).
 - **Secrets out of git, not out of the binary** — see [Secrets](#secrets).
@@ -205,10 +236,13 @@ isn't worth it.
 
 ## TODO / open points
 
-- [ ] **Not yet run on hardware.** All four panels build; SPI pins, refresh,
-      overlay placement and colour mapping (`bwr`/`e6`, paged `GxEPD2_3C`/`_7C`)
-      need first-device verification. Older ACeP `c7` / other 7-colour panels are
-      not wired up.
+- [ ] **Not yet run on hardware.** All five panels build (4.2" b/w, 7.5" b/w,
+      7.5" b/w/red, 7.3" Spectra 6, 7.3" ACeP 7-colour); SPI pins, refresh,
+      overlay placement, runtime panel switching and colour mapping (`bwr`/`e6`/
+      `c7`, paged `GxEPD2_3C`/`_7C`) need first-device verification.
+- [ ] **First-boot geometry (multi-panel).** Before any `config.json`/NVS panel,
+      a pre-config error screen renders on the compile-time default geometry
+      (best effort) — wrong on a non-default device until config runs once.
 - [ ] **Verify the refresh/housekeeping overlap on hardware.** Busy-callback
       timing, WiFi-off mid-refresh not disturbing the panel, and the 90 s
       watchdog — confirm on a real (esp. 7-colour) device; measure sleep current.
@@ -241,7 +275,8 @@ esp32paper/
 ├── include/settings.h.example  # copy to settings.h (WiFi + nice4iot secrets)
 ├── lib/pngle/                  # vendored PNG decoder
 └── src/
-    ├── config.h                # pins, panel selection, AppConfig defaults
+    ├── config.h                # pins, panel opt-in flags, AppConfig defaults
+    ├── panels.h                # panel registry + runtime factory (GxEPD2_GFX*)
     ├── display_renderer.{h,cpp}# GxEPD2 (paged) + pngle → panel, overlay, errors
     └── main.cpp                # the wakeup cycle
 ```

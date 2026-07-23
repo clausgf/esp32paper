@@ -37,25 +37,36 @@ static const int BATTERY_OFFSET_MV = 0;
 static const int BATTERY_MIN_MV   = 3300; // undervoltage shutdown threshold
 
 // ***************************************************************************
-// Panel selection (chosen via build_flags in platformio.ini)
+// Panel support (opt-in list via build_flags in platformio.ini)
 // ***************************************************************************
-// Exactly one EPAPER_PANEL_* macro must be defined. It selects the GxEPD2
-// driver class and the display geometry in display_renderer.cpp:
-//   EPAPER_PANEL_42_BW   4.2"  400x300 black/white          (color_model bw)
-//   EPAPER_PANEL_75_BW   7.5"  800x480 black/white          (color_model bw)
-//   EPAPER_PANEL_75_BWR  7.5"  800x480 black/white/red      (color_model bwr)
-//   EPAPER_PANEL_73_E6   7.3"  800x480 Spectra 6 / E6 (6c)  (color_model e6)
-#if !defined(EPAPER_PANEL_42_BW) && \
-    !defined(EPAPER_PANEL_75_BW) && \
-    !defined(EPAPER_PANEL_75_BWR) && \
-    !defined(EPAPER_PANEL_73_E6)
+// Define any subset of these; ALL enabled drivers are compiled in and the
+// active panel is chosen at runtime (config.json "panel" > NVS > default). Only
+// the runtime-selected panel allocates its page buffer, so unused ones cost
+// flash but no RAM. See src/panels.h for the registry / colour models.
+//
+//   flag                 id "panel"         panel                        color_model
+//   EPAPER_PANEL_42_BW   gxepd2_420         4.2"  400x300 b/w            bw
+//   EPAPER_PANEL_75_BW   gxepd2_750_t7      7.5"  800x480 b/w            bw
+//   EPAPER_PANEL_75_BWR  gxepd2_750c_z90    7.5"  800x480 b/w/red        bwr
+//   EPAPER_PANEL_73_E6   gxepd2_073e01      7.3"  800x480 Spectra 6      e6
+//   EPAPER_PANEL_73_7C   gxepd2_acep_730    7.3"  800x480 ACeP 7-colour  c7
+#if !defined(EPAPER_PANEL_42_BW) && !defined(EPAPER_PANEL_75_BW) && \
+    !defined(EPAPER_PANEL_75_BWR) && !defined(EPAPER_PANEL_73_E6) && \
+    !defined(EPAPER_PANEL_73_7C)
 #define EPAPER_PANEL_42_BW 1
 #endif
 
-// The nicepaper color_model requested via ?color_model=. Should match the
-// selected panel (bw for the b/w panels, bwr for the 3-colour panel).
-#ifndef EPAPER_COLOR_MODEL
-#define EPAPER_COLOR_MODEL "bw"
+// Panel id used before config.json is available (first boot, pre-config error
+// screens). If unset, the first compiled-in panel is used. Best-effort: on a
+// device whose real panel differs, an early error screen may render on the
+// wrong geometry until config.json (or NVS) supplies the correct panel.
+// #define EPAPER_DEFAULT_PANEL "gxepd2_420"
+
+// GxEPD2 page-buffer byte budget: the per-panel page height is derived from
+// this so every panel fits without PSRAM. Raise it for fewer PNG re-decodes
+// when the module has spare internal DRAM.
+#ifndef EPAPER_PAGE_BYTES
+#define EPAPER_PAGE_BYTES 16384
 #endif
 
 // ***************************************************************************
@@ -67,7 +78,8 @@ static const int BATTERY_MIN_MV   = 3300; // undervoltage shutdown threshold
 //
 //   "log_level"     int    arduino4iot log level (handled by the library)
 //   "sleep_s"       int    fallback deep-sleep duration (handled by library)
-//   "color_model"   string nicepaper palette: bw | bwr | gs4 | c7 | e6
+//   "panel"         string panel id (see table above); persisted in NVS. The
+//                          nicepaper color_model is derived from it.
 //   "image_path"    string API path template for the rendered image
 //   "min_sleep_s"   int    lower clamp for the Cache-Control derived sleep
 //   "max_sleep_s"   int    upper clamp for the Cache-Control derived sleep
@@ -79,7 +91,7 @@ struct AppConfig
     // API path to the nicepaper image. {project} and {device} are expanded by
     // arduino4iot; nicepaper resolves {device} to a screen via aliases.json.
     String imagePath = "ext/epaper/{project}/screens/{device}/image.png";
-    String colorModel = EPAPER_COLOR_MODEL;
+    String panel     = "";            // "" = keep NVS/default panel
     int    minSleep_s   = 300;        //  5 min
     int    maxSleep_s   = 24 * 3600;  // 24 h
     int    errorRetry_s = 900;        // 15 min retry after a failure/error screen

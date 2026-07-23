@@ -22,6 +22,7 @@
 
 #include <Arduino.h>
 #include <WiFi.h>
+#include <Preferences.h>
 #include <iot.h>
 
 #include "config.h"
@@ -104,12 +105,31 @@ static AppConfig loadAppConfig()
 {
     AppConfig cfg;
     cfg.imagePath    = config.getConfigString("image_path", cfg.imagePath);
-    cfg.colorModel   = config.getConfigString("color_model", cfg.colorModel);
+    cfg.panel        = config.getConfigString("panel", cfg.panel);
     cfg.minSleep_s   = config.getConfigInt32("min_sleep_s", cfg.minSleep_s);
     cfg.maxSleep_s   = config.getConfigInt32("max_sleep_s", cfg.maxSleep_s);
     cfg.errorRetry_s = config.getConfigInt32("error_retry_s", cfg.errorRetry_s);
     cfg.rotation     = config.getConfigInt32("rotation", cfg.rotation);
     return cfg;
+}
+
+// Panel id persisted in NVS (namespace "epaper") so pre-config error screens use
+// the right geometry after the first successful config on a multi-panel build.
+static String nvsGetPanel()
+{
+    Preferences p;
+    p.begin("epaper", /*readonly*/ true);
+    String id = p.getString("panel", "");
+    p.end();
+    return id;
+}
+static void nvsSetPanel(const String &id)
+{
+    if (id.isEmpty()) return;
+    Preferences p;
+    p.begin("epaper", false);
+    if (p.getString("panel", "") != id) p.putString("panel", id);
+    p.end();
 }
 
 static int parseMaxAge(const String &cacheControl)
@@ -136,8 +156,9 @@ static ImageResult fetchImage(const AppConfig &cfg)
     ImageResult r;
 
     String path = cfg.imagePath;
-    if (cfg.colorModel.length())
-        path += "?color_model=" + cfg.colorModel;
+    String colorModel = displayRenderer.colorModel(); // derived from the active panel
+    if (colorModel.length())
+        path += "?color_model=" + colorModel;
 
     std::map<String, String> reqHeaders;
     reqHeaders["Accept"] = "image/png";
@@ -177,14 +198,10 @@ void setup()
     // --- configure API access to the nice4iot server ---
     api.setApiUrl(IOT_API_URL);
     api.setProjectName(IOT_PROJECT);
-    // Set the provisioning token unconditionally (settings.h / build flags are
-    // the single source of truth) so an updated token overwrites a stale one
-    // left in NVS — setProvisioningTokenIfEmpty() would keep the old one, a
-    // common "provisioning fails after I changed the token" trap. Only skip when
-    // deliberately blanked, to keep re-provisioning working from the stored one.
-    // setProvisioningToken() writes NVS only when the value actually changed.
-    if (strlen(IOT_PROVISIONING_TOKEN) > 0)
-        api.setProvisioningToken(IOT_PROVISIONING_TOKEN);
+    // Seed the provisioning token only if none is stored yet — arduino4iot keeps
+    // it in NVS after first use, so re-flashing does not re-provision needlessly.
+    // (To replace a wrong token later, erase NVS once: `pio run -t erase`.)
+    api.setProvisioningTokenIfEmpty(IOT_PROVISIONING_TOKEN);
     // TLS for an https:// API URL: arduino4iot creates a bare WiFiClientSecure,
     // so without a CA cert or setCertInsecure() the handshake fails ("connection
     // refused"/status=-1). Provide the CA to verify the server (recommended),
@@ -209,23 +226,53 @@ void setup()
         iot.setBatteryMin_mV(BATTERY_MIN_MV);
     }
 
+    // --- panel: for a multi-panel build, use the NVS-persisted panel so a
+    //     pre-config error screen renders on the right geometry ("" keeps the
+    //     compiled-in default). config.json refines this below (best effort:
+    //     the very first boot before any config uses the default).
+    displayRenderer.setPanel(nvsGetPanel());
+
     // Default retry interval until config.json is loaded.
     int retry_s = AppConfig{}.errorRetry_s;
 
     // --- connect WiFi, init subsystems, sync NTP; panics on undervoltage ---
     if (!iot.begin(WIFI_SSID, WIFI_PASSWORD))
     {
-        failScreen(ErrorIcon::NoWifi, "No WiFi",
-                   "Could not join the WiFi network\nor sync the time (NTP).\n\n"
-                   "Retrying shortly.", retry_s);
+        if (WiFi.status() != WL_CONNECTED)
+            failScreen(ErrorIcon::NoWifi, "No WiFi",
+                       "Could not join the WiFi network.\n\nRetrying shortly.", retry_s);
+        else
+            failScreen(ErrorIcon::Warning, "No time sync",
+                       "WiFi is up but NTP time sync failed.\n\nRetrying shortly.", retry_s);
     }
     unsigned long connect_ms = millis() - tBoot; // WiFi connect + NTP sync
 
-    if (!api.updateProvisioningOk())
+    // updateProvisioning() returns a typed result so we can show a matching
+    // error screen (arduino4iot >= the updateProvisioning() API).
+    IotResult prov = api.updateProvisioning();
+    if (!prov)
     {
-        failScreen(ErrorIcon::Warning, "Provisioning failed",
-                   "The server rejected this device.\n\n"
-                   "Check the provisioning token\nand the project status.", retry_s);
+        if (prov.isTransportError())
+            failScreen(ErrorIcon::NoWifi, "No server connection",
+                       "Cannot reach the nice4iot server.\n\n"
+                       "Check the API URL, TLS certificate\nand network.", retry_s);
+        else if (prov.httpStatus == IotResult::STATUS_NO_PROVISIONING_TOKEN)
+            failScreen(ErrorIcon::Warning, "No provisioning token",
+                       "No provisioning token is configured.\n\n"
+                       "Set it in settings.h.", retry_s);
+        else if (prov.httpStatus == 403)
+            failScreen(ErrorIcon::Warning, "Provisioning rejected",
+                       "The server rejected this device.\n\n"
+                       "Check the token, and that the device\n"
+                       "is approved and active.", retry_s);
+        else if (prov.httpStatus == IotResult::STATUS_MALFORMED_RESPONSE)
+            failScreen(ErrorIcon::Warning, "Provisioning failed",
+                       "Unexpected response from the server.\n\n"
+                       "Is this a nice4iot API URL?", retry_s);
+        else
+            failScreen(ErrorIcon::Warning, "Provisioning failed",
+                       String("The server returned status ") + prov.httpStatus +
+                       ".\n\nCheck the token and device approval.", retry_s);
     }
 
     // --- only the essentials before the refresh (minimise time-to-refresh) ---
@@ -239,6 +286,11 @@ void setup()
                 (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getHeapSize(),
                 (unsigned)ESP.getPsramSize());
     displayRenderer.setRotation(cfg.rotation);
+    if (cfg.panel.length())
+    {
+        displayRenderer.setPanel(cfg.panel);
+        nvsSetPanel(displayRenderer.activePanel()); // remember for next boot
+    }
 
     unsigned long t0 = millis();
     ImageResult img = fetchImage(cfg);
@@ -274,6 +326,8 @@ void setup()
         t.add("displayed", displayed ? 1 : 0);
         t.add("heap_free", (int)ESP.getFreeHeap());
         t.add("sleep_s", sleep_s > 0 ? sleep_s : iot.getLastSleepDuration_s());
+        t.add("panel", displayRenderer.activePanel());        // active panel id
+        t.add("panels", displayRenderer.supportedPanels());   // compiled-in panels
         // Previous cycle's end-of-cycle phases, buffered in RTC RAM (see below).
         if (rtc_tel.magic == RTC_TEL_MAGIC)
         {
