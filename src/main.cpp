@@ -195,6 +195,21 @@ void setup()
     unsigned long tBoot = millis();
     Serial.begin(115200);
 
+    // Register the app config keys with arduino4iot's IotConfig, else
+    // updateConfig() ignores them (only registered keys are stored in NVRAM) and
+    // getConfig*() would always return the default. Types must match the JSON;
+    // `static` so each registration (a pointer to the value) outlives setup().
+    // log_level and sleep_s are registered by the library itself.
+    {
+        const AppConfig d;
+        static IotConfigValue<String>  cvPanel(config, d.panel, "panel");
+        static IotConfigValue<String>  cvImagePath(config, d.imagePath, "image_path");
+        static IotConfigValue<int32_t> cvRotation(config, d.rotation, "rotation");
+        static IotConfigValue<int32_t> cvMinSleep(config, d.minSleep_s, "min_sleep_s");
+        static IotConfigValue<int32_t> cvMaxSleep(config, d.maxSleep_s, "max_sleep_s");
+        static IotConfigValue<int32_t> cvErrorRetry(config, d.errorRetry_s, "error_retry_s");
+    }
+
     // --- configure API access to the nice4iot server ---
     api.setApiUrl(IOT_API_URL);
     api.setProjectName(IOT_PROJECT);
@@ -378,6 +393,13 @@ void setup()
             failScreen(ErrorIcon::Warning, "Image error",
                        "The received image\nis not a valid PNG.", retry_s);
         }
+    }
+    else if (img.status < 0)
+    {
+        // transport error (TLS/connection/timeout) — same class as provisioning
+        failScreen(ErrorIcon::NoWifi, "No server connection",
+                   "Cannot reach the nice4iot server.\n\n"
+                   "Check the API URL, TLS certificate\nand network.", retry_s);
     }
     else
     {
