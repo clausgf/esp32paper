@@ -39,17 +39,19 @@
 #endif
 
 // --- TLS (only relevant when IOT_API_URL is https://) ----------------------
-// A WiFiClientSecure needs to trust the server, or the handshake fails with
-// "connection refused" / status=-1. Choose exactly ONE:
+// A WiFiClientSecure must trust the server, or the handshake fails
+// ("connection refused" / status=-1). By default this example verifies against
+// the built-in public root CA bundle (Mozilla, embedded by arduino-esp32),
+// which covers publicly-trusted certs such as Let's Encrypt. For a private or
+// self-signed CA, comment IOT_TLS_CA_BUNDLE out and enable one alternative.
+#define IOT_TLS_CA_BUNDLE 1
 //
-// (a) Recommended: pin the server's CA certificate so its identity is verified.
+//   (a) pin the server's own CA certificate (self-hosted / self-signed):
 // #ifndef IOT_CA_CERT
 // #define IOT_CA_CERT R"EOF(-----BEGIN CERTIFICATE-----
 // ...
 // -----END CERTIFICATE-----
 // )EOF"
 // #endif
-//
-// (b) Home lab / quick bring-up: skip verification (encrypted but the server
-//     identity is NOT checked — do not use in production).
+//   (b) skip verification (encrypted but UNVERIFIED — home lab only):
 // #define IOT_TLS_INSECURE 1

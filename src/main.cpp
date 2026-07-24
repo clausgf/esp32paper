@@ -202,15 +202,20 @@ void setup()
     // it in NVS after first use, so re-flashing does not re-provision needlessly.
     // (To replace a wrong token later, erase NVS once: `pio run -t erase`.)
     api.setProvisioningTokenIfEmpty(IOT_PROVISIONING_TOKEN);
-    // TLS for an https:// API URL: arduino4iot creates a bare WiFiClientSecure,
-    // so without a CA cert or setCertInsecure() the handshake fails ("connection
-    // refused"/status=-1). Provide the CA to verify the server (recommended),
-    // or opt into unverified TLS for a home lab. (No-op for http:// URLs.)
+    // TLS server trust for an https:// API URL (arduino4iot creates a bare
+    // WiFiClientSecure): pick one via settings.h, or the handshake fails
+    // ("connection refused"/status=-1). The example enables IOT_TLS_CA_BUNDLE.
+    // No-op for http:// URLs.
+    if (String(IOT_API_URL).startsWith("https://"))
+    {
 #if defined(IOT_CA_CERT)
-    api.setCACert(IOT_CA_CERT);
+        api.setCACert(IOT_CA_CERT);      // pin a self-hosted/self-signed CA
+#elif defined(IOT_TLS_CA_BUNDLE)
+        api.setCACertBundle();           // built-in public root CA bundle
 #elif defined(IOT_TLS_INSECURE)
-    api.setCertInsecure(); // encrypted but UNVERIFIED — do not use in production
+        api.setCertInsecure();           // unverified — home lab only
 #endif
+    }
 
     // --- battery + status LED (must be set before iot.begin()) ---
     // Guards are runtime `if`s because the pins are const ints, not macros;

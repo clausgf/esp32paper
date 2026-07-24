@@ -110,9 +110,11 @@ Either way the values end up in the firmware `.bin` — keeping them out of git
 protects the source, not the binary.
 
 **TLS** (only when `IOT_API_URL` is `https://`): a `WiFiClientSecure` must trust
-the server or the handshake fails (`status=-1`). Set exactly one in `settings.h`:
-`IOT_CA_CERT` (the server's CA, verified — recommended) or `IOT_TLS_INSECURE 1`
-(encrypted but unverified — home lab only). See `settings.h.example`.
+the server or the handshake fails (`status=-1`). Pick one in `settings.h` —
+`settings.h.example` enables `IOT_TLS_CA_BUNDLE` (verify against the built-in
+public root CA bundle; works for Let's Encrypt & other public CAs). Alternatives:
+`IOT_CA_CERT` (pin a self-hosted/self-signed CA) or `IOT_TLS_INSECURE 1`
+(encrypted but unverified — home lab).
 
 ### Runtime config (`config.json`)
 
