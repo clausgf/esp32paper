@@ -28,6 +28,47 @@
 // Colour handling per panel (drives colorForPixel() in display_renderer.cpp).
 enum class ColorMode : uint8_t { BW, BWR, E6, C7 };
 
+// A panel's colour palette. nicepaper pre-quantizes every image to its panel's
+// color_model, so mapping a decoded pixel onto the panel is a plain nearest-RGB
+// match against that model's palette (see colorForPixel). One table per colour
+// model; a panel selects its model via ColorMode. Adding a colour model = add a
+// palette here plus a case in epdPalette(); adding a *panel* stays a one-row
+// change in the registry above.
+struct PaletteEntry { uint8_t r, g, b; uint16_t color; };
+
+static const PaletteEntry EPD_PALETTE_BW[] = {
+    {0, 0, 0, GxEPD_BLACK}, {255, 255, 255, GxEPD_WHITE},
+};
+static const PaletteEntry EPD_PALETTE_BWR[] = {
+    {0, 0, 0, GxEPD_BLACK}, {255, 255, 255, GxEPD_WHITE}, {255, 0, 0, GxEPD_RED},
+};
+// Spectra 6 (E6): 6 colours.
+static const PaletteEntry EPD_PALETTE_E6[] = {
+    {  0,   0,   0, GxEPD_BLACK }, {255, 255, 255, GxEPD_WHITE },
+    {255,   0,   0, GxEPD_RED   }, {255, 255,   0, GxEPD_YELLOW},
+    {  0,   0, 255, GxEPD_BLUE  }, {  0, 255,   0, GxEPD_GREEN },
+};
+// ACeP 7-colour (c7): the six above plus orange.
+static const PaletteEntry EPD_PALETTE_C7[] = {
+    {  0,   0,   0, GxEPD_BLACK }, {255, 255, 255, GxEPD_WHITE },
+    {  0, 255,   0, GxEPD_GREEN }, {  0,   0, 255, GxEPD_BLUE  },
+    {255,   0,   0, GxEPD_RED   }, {255, 255,   0, GxEPD_YELLOW},
+    {255, 128,   0, GxEPD_ORANGE},
+};
+
+// The palette (and its length) for a colour mode.
+static const PaletteEntry *epdPalette(ColorMode mode, uint8_t *count)
+{
+    switch (mode)
+    {
+    case ColorMode::BWR: *count = 3; return EPD_PALETTE_BWR;
+    case ColorMode::E6:  *count = 6; return EPD_PALETTE_E6;
+    case ColorMode::C7:  *count = 7; return EPD_PALETTE_C7;
+    case ColorMode::BW:
+    default:             *count = 2; return EPD_PALETTE_BW;
+    }
+}
+
 // Page-buffer rows that fit the byte budget, clamped to [1, panel height].
 static constexpr uint16_t epdPageRows(int rowBytes, int height)
 {

@@ -17,10 +17,13 @@
 #include <pngle.h>
 
 // ***************************************************************************
-// Active panel (created lazily in initPanel_), and its colour mode.
+// Active panel (created lazily in initPanel_); its palette lives below.
 // ***************************************************************************
 static GxEPD2_GFX *gx = nullptr;
-static ColorMode s_colorMode = ColorMode::BW;
+
+// Palette of the active panel (set in applyPanel_ from the panel's ColorMode).
+static const PaletteEntry *s_palette = EPD_PALETTE_BW;
+static uint8_t s_paletteCount = 2;
 
 DisplayRenderer displayRenderer;
 
@@ -34,7 +37,7 @@ void DisplayRenderer::applyPanel_(const char *id)
     if (!info) info = epdPanelInfo(epdDefaultPanelId());
     _panelId = info->id;
     _colorModel = info->colorModel;
-    s_colorMode = info->colorMode;
+    s_palette = epdPalette(info->colorMode, &s_paletteCount);
 }
 
 void DisplayRenderer::setPanel(const String &id)
@@ -62,23 +65,6 @@ void DisplayRenderer::setPanel(const String &id)
 
 static bool s_drawEnabled = false; // false = validation pass (no drawing)
 
-struct PaletteEntry { uint8_t r, g, b; uint16_t color; };
-
-// Spectra 6 (E6): 6 colours. nicepaper's e6 output is already quantized to
-// these, so nearest-RGB is an exact match.
-static const PaletteEntry E6_PALETTE[] = {
-    {  0,   0,   0, GxEPD_BLACK  }, {255, 255, 255, GxEPD_WHITE },
-    {255,   0,   0, GxEPD_RED    }, {255, 255,   0, GxEPD_YELLOW},
-    {  0,   0, 255, GxEPD_BLUE   }, {  0, 255,   0, GxEPD_GREEN },
-};
-// ACeP 7-colour (c7): the six above plus orange.
-static const PaletteEntry C7_PALETTE[] = {
-    {  0,   0,   0, GxEPD_BLACK  }, {255, 255, 255, GxEPD_WHITE },
-    {  0, 255,   0, GxEPD_GREEN  }, {  0,   0, 255, GxEPD_BLUE  },
-    {255,   0,   0, GxEPD_RED    }, {255, 255,   0, GxEPD_YELLOW},
-    {255, 128,   0, GxEPD_ORANGE },
-};
-
 static uint16_t nearestPalette(const PaletteEntry *pal, int n,
                                uint8_t r, uint8_t g, uint8_t b)
 {
@@ -93,26 +79,13 @@ static uint16_t nearestPalette(const PaletteEntry *pal, int n,
     return best;
 }
 
-// nicepaper delivers pixels already snapped to the panel palette, so plain
-// thresholds (b/w, b/w/red) or a nearest-palette match (6/7-colour) suffice.
+// nicepaper delivers pixels already snapped to the panel's color_model, so a
+// nearest-RGB match against that panel's palette maps every mode (b/w, b/w/red,
+// 6- and 7-colour) with the same code path — no per-mode special-casing.
 static uint16_t colorForPixel(uint8_t r, uint8_t g, uint8_t b, uint8_t a)
 {
     if (a < 128) return GxEPD_WHITE; // treat transparent as background
-    switch (s_colorMode)
-    {
-    case ColorMode::BWR:
-        if (r > 128 && g < 100 && b < 100) return GxEPD_RED;
-        break; // else fall through to luma
-    case ColorMode::E6:
-        return nearestPalette(E6_PALETTE, 6, r, g, b);
-    case ColorMode::C7:
-        return nearestPalette(C7_PALETTE, 7, r, g, b);
-    case ColorMode::BW:
-    default:
-        break;
-    }
-    uint32_t luma = (77u * r + 150u * g + 29u * b) >> 8; // Rec. 601
-    return (luma < 128) ? GxEPD_BLACK : GxEPD_WHITE;
+    return nearestPalette(s_palette, s_paletteCount, r, g, b);
 }
 
 static void onPngDraw(pngle_t *, uint32_t x, uint32_t y,

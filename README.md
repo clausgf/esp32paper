@@ -31,26 +31,43 @@ flowchart LR
 ## How it works
 
 One wakeup cycle (`setup()` runs, then deep sleep). The order is tuned for
-energy — minimal work before the refresh, and the WiFi radio off *during* the
-slow refresh:
+energy — as little as possible on the *radio-on* critical path before the
+refresh, and everything else deferred so it overlaps the slow refresh with the
+WiFi radio switched off part-way through:
 
-1. **Connect** WiFi + NTP — `iot.begin()`
-2. **Provision** (usually a no-op) — `api.updateProvisioningOk()`
-3. **Config** (`config.json`; usually a 304) — `config.updateConfig()`
-4. **GET image** with ETag / `If-None-Match` —
+1. **Connect** WiFi + NTP — `iot.begin()`. arduino4iot caches the last-good
+   BSSID + channel in RTC RAM for a **scan-free reconnect** and throttles NTP
+   resync to ~24 h; `iot.setStaticIp(...)` additionally skips DHCP if wanted.
+2. **Provision** — `api.updateProvisioning()` (no round-trip while the device
+   token is still valid)
+3. **GET image** with ETag / `If-None-Match`, using the **NVS-cached config** —
    `api.apiGet(".../ext/epaper/{project}/screens/{device}/image.png")`
-5. **Render** (paged, PNG re-decoded per page) + WiFi/battery overlay —
+4. **Render** (paged, PNG re-decoded per page) + WiFi/battery overlay —
    `displayRenderer.renderImage()`. While the panel refreshes (seconds, CPU
-   idle), a busy-callback runs the **housekeeping** (OTA check, telemetry, log
-   flush) and **switches WiFi off**.
-6. **Deep sleep** for `Cache-Control: max-age` (clamped) — `iot.deepSleep()`
+   idle), a busy-callback runs the **housekeeping** — a throttled OTA check
+   (`fw_check_s`), a `config.json` refresh *for the next cycle*, telemetry and
+   log flush — then **switches WiFi off** before the refresh even finishes.
+5. **Deep sleep**, schedule-aligned — `iot.deepSleep()`
 
-The schedule lives on the server: nicepaper's `max-age` from step 4 becomes the
-next sleep duration. An unchanged screen returns `304` — no redraw (housekeeping
-then runs inline). Serious failures show a **full-screen error page** and retry
-after `error_retry_s`; the message matches the cause — no WiFi vs. failed NTP,
-no server connection vs. provisioning rejected (classified from arduino4iot's
-typed `IotResult`), or a missing/invalid image.
+The schedule lives on the server: nicepaper's `Cache-Control: max-age` from step
+3 sets the next sleep. Rather than sleeping `max-age` from *cycle end* (which
+would drift the next wake late by the whole active window — up to tens of seconds
+on a 7-colour refresh), the device sleeps `max-age − elapsed-since-fetch`
+(clamped to `[min_sleep_s, max_sleep_s]`), so wakeups stay aligned to the
+schedule even for short intervals.
+
+Config is used from NVS (cached from the previous cycle) and refreshed in the
+background for the *next* cycle, keeping its round-trip off the critical path;
+the very first boot (no cache yet) fetches it synchronously so the first render
+already uses the configured panel. An unchanged screen returns **304** — no
+redraw and no housekeeping either: the radio goes straight off and the wake is
+merely counted (reported as `deferred_cycles` on the next telemetry POST). OTA
+and telemetry catch up on the next cycle that actually refreshes.
+
+Serious failures show a **full-screen error page** and retry after
+`error_retry_s`; the message matches the cause — no WiFi vs. failed NTP, no
+server connection vs. provisioning rejected (classified from arduino4iot's typed
+`IotResult`), or a missing/invalid image.
 
 ## Getting started
 
@@ -130,6 +147,10 @@ Served by nice4iot at `file/{project}/{device}/config.json`; all keys optional:
 | `max_sleep_s`  | int    | `86400`                                           | upper clamp on `max-age` sleep |
 | `error_retry_s`| int    | `900`                                             | sleep after an error screen |
 | `rotation`     | int    | `0`                                               | GxEPD2 rotation 0..3 |
+| `fw_check_s`   | int    | `86400`                                           | min seconds between OTA checks (`0` = every wake) |
+
+Changing a key takes effect on the *next* cycle (config is refreshed in the
+background — see [How it works](#how-it-works)).
 
 ### Monitoring
 
@@ -142,7 +163,8 @@ Everything flows through nice4iot:
   `image_maxage_s`, `displayed`, `heap_free`, `sleep_s`, `panel` (active id),
   `panels` (compiled-in panel ids). From the previous cycle
   (buffered in RTC RAM, since they only complete after the refresh):
-  `last_cycle_ms`, `last_refresh_ms`, `last_decode_transfer_ms`.
+  `last_cycle_ms`, `last_refresh_ms`, `last_decode_transfer_ms`, and
+  `deferred_cycles` (silent `304` wakes skipped since the last POST).
 - **Logging** — buffered, flushed in the overlap before WiFi off.
 
 ### Memory & paging
@@ -194,9 +216,10 @@ so **only its buffer** uses RAM. Firmware size (this build, all five panels,
   creates the one named by `config.json`/NVS/default as a `GxEPD2_GFX*` (needs
   `-DENABLE_GxEPD2_GFX=1`). Only the selected panel's page buffer is heap-
   allocated, so unused panels cost flash but no RAM (see `src/panels.h`).
-- **Colour mapping matches the panel** — chosen at runtime from the panel:
-  luma threshold (b/w), red test (b/w/red), nearest-of-6 (E6) or nearest-of-7
-  (ACeP c7); nicepaper already quantized, so no dithering.
+- **Colour mapping matches the panel** — one code path: a nearest-RGB match
+  against the active panel's palette (2 colours b/w, 3 b/w/red, 6 Spectra 6, 7
+  ACeP c7). nicepaper already quantized to that palette, so the match is exact
+  and there is no dithering. Palettes are panel data in `src/panels.h`.
 - **Client-side status overlay** — WiFi bars + battery gauge (live device state
   the server can't know), drawn top-right over every image.
 - **Full-screen error pages** — icon + message (with `\n` paragraph breaks),
@@ -204,11 +227,16 @@ so **only its buffer** uses RAM. Firmware size (this build, all five panels,
   cause is classified from arduino4iot's typed `IotResult` — transport/TLS vs.
   HTTP 403 vs. no-token vs. malformed body — so the screen is specific, not
   generic (no reachability guesswork).
-- **Energy** — minimal work before the refresh; OTA/telemetry/logs overlap the
-  refresh via GxEPD2's busy callback (run-once, with a fallback), then WiFi off;
-  sleep duration computed beforehand. Watchdog widened to 90 s for the long
-  refresh. Caveat: a real OTA *download* in that window reboots mid-refresh
-  (harmless, re-rendered next boot).
+- **Energy** — as little as possible on the radio-on critical path: config is
+  used from the NVS cache and refreshed in the background for the *next* cycle,
+  the OTA check is throttled (`fw_check_s`), and OTA/telemetry/logs overlap the
+  refresh via GxEPD2's busy callback (run-once, with a fallback) before WiFi
+  switches off. A `304` (unchanged) skips housekeeping entirely — radio straight
+  off, the wake merely counted as `deferred_cycles`. Sleep is **schedule-aligned**
+  (`max-age − elapsed-since-fetch`) so wakeups don't drift late by the refresh.
+  Scan-free WiFi reconnect + optional static IP come from arduino4iot. Watchdog
+  widened to 90 s for the long refresh. Caveat: a real OTA *download* in that
+  window reboots mid-refresh (harmless, re-rendered next boot).
 - **End-of-cycle timings buffered in RTC RAM** — `refresh_ms`/
   `decode_transfer_ms`/`cycle_ms` complete only after the refresh, so they ship
   next cycle as `last_*` instead of keeping WiFi on; the refresh start is
