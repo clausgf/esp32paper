@@ -1,23 +1,31 @@
 /**
- * esp32paper — local, secret settings.
+ * esp32paper — one-time device seed configuration.
  *
- * Copy this file to `include/settings.h` (which is git-ignored) and fill in
- * your values. Each value is only defined here if it was not already provided
- * via build_flags / secrets.ini, so either mechanism works — see the "Secrets"
- * section in README.md.
+ * Copy this file to `include/settings.h` (which is git-ignored) and fill in your
+ * values, then build + flash the device ONCE. arduino4iot writes these bootstrap
+ * values (WiFi, API endpoint, project, provisioning token, TLS trust) into NVS on
+ * first boot (`iot.seedCredentials()`), and the device reuses them from NVS
+ * afterwards.
  *
- * NOTE: whichever method you use, these values are compiled into the firmware
- * binary (flash). Keeping them out of git protects the source, not the .bin.
+ * Every LATER build can be SECRETLESS: with no settings.h (and no seed build
+ * flags) the seed defaults are empty, so seeding is a no-op and the device keeps
+ * the values already in its NVS. That is what lets firmware updates — and a
+ * public CI — ship without any secrets. See README "Secrets".
+ *
+ * NOTE: a firmware built WITH this file contains these values in plaintext in the
+ * .bin (same as any compiled-in string). Keep this seed build local; never
+ * publish it. To rotate a value later, change it here and bump
+ * IOT_SEED_GENERATION, then re-flash once.
  */
 
 #pragma once
 
 // --- WiFi ------------------------------------------------------------------
-#ifndef WIFI_SSID
-#define WIFI_SSID     "my-wifi"
+#ifndef IOT_WIFI_SSID
+#define IOT_WIFI_SSID     "my-wifi"
 #endif
-#ifndef WIFI_PASSWORD
-#define WIFI_PASSWORD "my-password"
+#ifndef IOT_WIFI_PASSWORD
+#define IOT_WIFI_PASSWORD "my-password"
 #endif
 
 // --- nice4iot server -------------------------------------------------------
@@ -31,19 +39,23 @@
 #define IOT_PROJECT   "my-project"
 #endif
 // One-time provisioning token issued by nice4iot for this project. It is
-// exchanged for a short-lived device token on first boot and then stored in
-// NVRAM (setProvisioningTokenIfEmpty), so it is only needed for first-time
-// provisioning — you may blank it on later builds.
+// exchanged for a short-lived device token on first boot; both are kept in NVS.
 #ifndef IOT_PROVISIONING_TOKEN
 #define IOT_PROVISIONING_TOKEN "P-102-FX61O...=="
 #endif
 
+// Bump this integer to force re-seeding the (non-empty) values above with a new
+// firmware; 0 keeps pure seed-if-absent behaviour (never overwrites NVS).
+#ifndef IOT_SEED_GENERATION
+#define IOT_SEED_GENERATION 1
+#endif
+
 // --- TLS (only relevant when IOT_API_URL is https://) ----------------------
-// A WiFiClientSecure must trust the server, or the handshake fails
-// ("connection refused" / status=-1). By default this example verifies against
-// the built-in public root CA bundle (Mozilla, embedded by arduino-esp32),
-// which covers publicly-trusted certs such as Let's Encrypt. For a private or
-// self-signed CA, comment IOT_TLS_CA_BUNDLE out and enable one alternative.
+// A WiFiClientSecure must trust the server, or the handshake fails. By default
+// this example verifies against the built-in public root CA bundle (Mozilla,
+// embedded by arduino-esp32), which covers publicly-trusted certs such as
+// Let's Encrypt. For a private or self-signed CA, comment IOT_TLS_CA_BUNDLE out
+// and enable one alternative. (No effect for an http:// endpoint.)
 #define IOT_TLS_CA_BUNDLE 1
 //
 //   (a) pin the server's own CA certificate (self-hosted / self-signed):

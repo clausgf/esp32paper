@@ -79,9 +79,14 @@ the device's `aliases.json` entry — see nicepaper's docs).
 git clone <this-repo> esp32paper
 cd esp32paper
 cp include/settings.h.example include/settings.h   # WiFi + nice4iot; see Secrets
-pio run -t upload
+pio run -t upload                                   # one-time SEED flash
 pio device monitor
 ```
+
+That first flash **seeds** the bootstrap config (WiFi, endpoint, project, token,
+TLS) into the device's NVS. Later firmware can be built **secretless** and reuses
+those NVS values — so updates (and CI) need no secrets (see
+[Firmware updates](#firmware-updates)).
 
 ### Panels
 
@@ -111,27 +116,52 @@ adds the panels' code to flash but no RAM for unused ones.
 
 ### Secrets
 
-WiFi credentials and the provisioning token are **never committed** (`.gitignore`
-excludes them; a missing one is a compile `#error`). The token is only needed for
-first provisioning — arduino4iot seeds it into NVRAM once (`setProvisioningTokenIfEmpty`)
-and thereafter uses the stored device token, so re-flashing does not re-provision.
-To replace a *wrong* token later, erase NVS once (`pio run -t erase`). Provide
-them via either:
+Bootstrap values a device needs *before* it can reach the server — WiFi
+credentials, API URL, project, provisioning token and TLS trust — are **seeded
+into NVS once** (arduino4iot's `iot.seedCredentials()`), not compiled into every
+build. A build carrying the `-D` defines is flashed once to seed a device; every
+later build can be **secretless** (empty defaults) and reuses the NVS values.
+None are ever committed (`.gitignore` excludes `include/settings.h` / `secrets.ini`).
+
+Provide the seed values for the one-time flash via either:
 
 - **`include/settings.h`** (default): `cp include/settings.h.example
   include/settings.h`. `#ifndef`-guarded, so build flags still win.
-- **`secrets.ini`** (CI): `cp secrets.ini.example secrets.ini`, then uncomment
-  `extra_configs` / `${secrets.build_flags}` in `platformio.ini`.
+- **`secrets.ini`**: `cp secrets.ini.example secrets.ini`, then uncomment
+  `extra_configs` / `${secrets.seed_flags}` in `platformio.ini`.
 
-Either way the values end up in the firmware `.bin` — keeping them out of git
-protects the source, not the binary.
+Seeding is **seed-if-absent**: existing NVS values are kept. To rotate a value,
+change it and bump `IOT_SEED_GENERATION`, then re-flash once; `iot.factoryReset()`
+clears everything. A firmware built *with* seed values holds them in plaintext in
+the `.bin` (like any compiled-in string), so keep such a build local — never
+publish it. The **secretless** build has none, which is what makes OTA updates and
+[CI](#firmware-updates) safe on a public repo.
 
-**TLS** (only when `IOT_API_URL` is `https://`): a `WiFiClientSecure` must trust
-the server or the handshake fails (`status=-1`). Pick one in `settings.h` —
-`settings.h.example` enables `IOT_TLS_CA_BUNDLE` (verify against the built-in
-public root CA bundle; works for Let's Encrypt & other public CAs). Alternatives:
-`IOT_CA_CERT` (pin a self-hosted/self-signed CA) or `IOT_TLS_INSECURE 1`
-(encrypted but unverified — home lab).
+**TLS** (only when the seeded `IOT_API_URL` is `https://`): seeded via the TLS
+mode. `settings.h.example` enables `IOT_TLS_CA_BUNDLE` → `IotTlsMode::Bundle`
+(verify against the built-in Mozilla root bundle; works for Let's Encrypt & other
+public CAs). Alternatives: `IOT_CA_CERT` → `CaPin` (pin a self-hosted/self-signed
+CA) or `IOT_TLS_INSECURE` → `Insecure` (encrypted but unverified — home lab).
+
+### Firmware updates
+
+Because the bootstrap config lives in NVS (which OTA does not touch), a **single
+secretless `firmware.bin` serves every device** — each reuses its own NVS seed.
+So updates carry no credentials and can be built in public CI.
+
+- **CI** (`.github/workflows/build.yml`) builds the secretless image on every
+  push and uploads it as a build artifact; a **version tag** (`git tag v1.2.3 &&
+  git push --tags`) additionally publishes a GitHub Release.
+- **Stable download endpoint** (public repo, no auth):
+  `https://github.com/<owner>/<repo>/releases/latest/download/firmware.bin`.
+  Point your nice4iot host at it, e.g. after a release:
+  `curl -fL <url> -o data/projects/<project>/firmware.bin` — arduino4iot then
+  pulls it per device on the next wakeup (`updateFirmware`, ETag-conditional).
+  (Build **artifacts** also exist but expire and need auth — prefer releases for a
+  fixed URL.)
+- GitHub Actions minutes are **free and unmetered for public repositories**
+  (private repos on the Free plan get 2,000 min/month + 500 MB artifact storage),
+  so building here has no practical per-build limit.
 
 ### Runtime config (`config.json`)
 
@@ -244,7 +274,8 @@ so **only its buffer** uses RAM. Firmware size (this build, all five panels,
 - **Opt-in panel list** (`EPAPER_PANEL_*`), **pioarduino platform**
   (arduino4iot needs arduino-esp32 3.x), **deep-sleep-first** (`loop()` unused;
   battery undervoltage → `iot.panic()`).
-- **Secrets out of git, not out of the binary** — see [Secrets](#secrets).
+- **Secrets seeded into NVS, not baked into every build** — one secretless image
+  serves all devices and enables public CI/OTA (see [Secrets](#secrets)).
 - **Battery %** from a resting-voltage LiPo lookup table (approximate).
 
 ## Rendering ownership (using or replacing GxEPD2)

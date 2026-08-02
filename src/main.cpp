@@ -28,16 +28,31 @@
 #include "config.h"
 #include "display_renderer.h"
 
-// Secrets come from include/settings.h (git-ignored) and/or build_flags /
-// secrets.ini; settings.h only fills in what build flags did not provide.
+// Deployment bootstrap values (WiFi, endpoint, project, provisioning token, TLS
+// trust) are seeded into NVS on first boot. A build WITH these -D defines /
+// settings.h is flashed once to seed a device; every later build can be
+// SECRETLESS (empty defaults below) and reuses the values already in NVS — so
+// OTA updates, and a public CI, need no secrets. See README 'Secrets'.
 #if __has_include("settings.h")
 #include "settings.h"
 #endif
-#if !defined(WIFI_SSID) || !defined(WIFI_PASSWORD) || !defined(IOT_API_URL) || \
-    !defined(IOT_PROJECT) || !defined(IOT_PROVISIONING_TOKEN)
-#error "Missing secrets. Copy include/settings.h.example to include/settings.h \
-(git-ignored) and fill it in, or define WIFI_SSID/WIFI_PASSWORD/IOT_API_URL/\
-IOT_PROJECT/IOT_PROVISIONING_TOKEN via build_flags or secrets.ini. See README 'Secrets'."
+#ifndef IOT_WIFI_SSID
+#define IOT_WIFI_SSID ""
+#endif
+#ifndef IOT_WIFI_PASSWORD
+#define IOT_WIFI_PASSWORD ""
+#endif
+#ifndef IOT_API_URL
+#define IOT_API_URL ""
+#endif
+#ifndef IOT_PROJECT
+#define IOT_PROJECT ""
+#endif
+#ifndef IOT_PROVISIONING_TOKEN
+#define IOT_PROVISIONING_TOKEN ""
+#endif
+#ifndef IOT_SEED_GENERATION
+#define IOT_SEED_GENERATION 0
 #endif
 
 // ***************************************************************************
@@ -267,26 +282,30 @@ void setup()
         static IotConfigValue<int32_t> cvFwCheck(config, d.fwCheck_s, "fw_check_s");
     }
 
-    // --- configure API access to the nice4iot server ---
-    api.setApiUrl(IOT_API_URL);
-    api.setProjectName(IOT_PROJECT);
-    // Seed the provisioning token only if none is stored yet — arduino4iot keeps
-    // it in NVS after first use, so re-flashing does not re-provision needlessly.
-    // (To replace a wrong token later, erase NVS once: `pio run -t erase`.)
-    api.setProvisioningTokenIfEmpty(IOT_PROVISIONING_TOKEN);
-    // TLS server trust for an https:// API URL (arduino4iot creates a bare
-    // WiFiClientSecure): pick one via settings.h, or the handshake fails
-    // ("connection refused"/status=-1). The example enables IOT_TLS_CA_BUNDLE.
-    // No-op for http:// URLs.
-    if (String(IOT_API_URL).startsWith("https://"))
+    // --- seed the deployment bootstrap config into NVS (once) ---
+    // On a build carrying the -D defines / settings.h this writes WiFi, endpoint,
+    // project, token and TLS trust to NVS (seed-if-absent; bump IOT_SEED_GENERATION
+    // to force-update changed values). A secretless build passes empty values — a
+    // no-op that reuses the NVS already on the device — so OTA images carry no
+    // secrets. iot.begin() / api.begin() below read this config back from NVS.
     {
+        IotSeedConfig seed;
+        seed.wifiSsid          = IOT_WIFI_SSID;
+        seed.wifiPassword      = IOT_WIFI_PASSWORD;
+        seed.apiUrl            = IOT_API_URL;
+        seed.projectName       = IOT_PROJECT;
+        seed.provisioningToken = IOT_PROVISIONING_TOKEN;
+        seed.seedGeneration    = IOT_SEED_GENERATION;
+        // TLS server trust for an https:// API URL (no-op for http://):
 #if defined(IOT_CA_CERT)
-        api.setCACert(IOT_CA_CERT);      // pin a self-hosted/self-signed CA
+        seed.tlsMode   = IotTlsMode::CaPin;    // pin a self-hosted/self-signed CA
+        seed.caCertPem = IOT_CA_CERT;
 #elif defined(IOT_TLS_CA_BUNDLE)
-        api.setCACertBundle();           // built-in public root CA bundle
+        seed.tlsMode = IotTlsMode::Bundle;     // built-in public root CA bundle
 #elif defined(IOT_TLS_INSECURE)
-        api.setCertInsecure();           // unverified — home lab only
+        seed.tlsMode = IotTlsMode::Insecure;   // unverified — home lab only
 #endif
+        iot.seedCredentials(seed);
     }
 
     // --- battery + status LED (must be set before iot.begin()) ---
@@ -312,12 +331,14 @@ void setup()
     // Default retry interval until config.json is loaded.
     int retry_s = AppConfig{}.errorRetry_s;
 
-    // --- connect WiFi, init subsystems, sync NTP; panics on undervoltage ---
-    if (!iot.begin(WIFI_SSID, WIFI_PASSWORD))
+    // --- connect WiFi (seeded creds from NVS), init subsystems, sync NTP;
+    //     panics on undervoltage ---
+    if (!iot.begin())
     {
         if (WiFi.status() != WL_CONNECTED)
             failScreen(ErrorIcon::NoWifi, "No WiFi",
-                       "Could not join the WiFi network.\n\nRetrying shortly.", retry_s);
+                       "Could not join the WiFi network.\n\n"
+                       "A new device must be seed-flashed once.\nRetrying shortly.", retry_s);
         else
             failScreen(ErrorIcon::Warning, "No time sync",
                        "WiFi is up but NTP time sync failed.\n\nRetrying shortly.", retry_s);

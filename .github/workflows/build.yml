@@ -1,0 +1,61 @@
+name: build
+
+# Builds the SECRETLESS firmware (no settings.h / secrets.ini in CI, so the seed
+# defaults are empty and no credentials end up in the binary — the device reuses
+# the values already in its NVS). See README "Secrets" / "Firmware updates".
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  firmware:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Cache PlatformIO
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.platformio
+            ~/.cache/pip
+          key: pio-${{ runner.os }}-${{ hashFiles('platformio.ini') }}
+
+      - name: Install PlatformIO
+        run: pip install 'platformio==6.1.19'
+
+      - name: Build (secretless / generic OTA image)
+        run: pio run
+
+      - name: Stage firmware
+        run: |
+          mkdir -p dist
+          cp .pio/build/waveshare_esp32_driver/firmware.bin dist/firmware.bin
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware
+          path: dist/firmware.bin
+
+      # On a version tag, publish a GitHub Release so the image has a stable,
+      # public download URL:
+      #   https://github.com/<owner>/<repo>/releases/latest/download/firmware.bin
+      - name: Publish release (tags only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/firmware.bin \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "$GITHUB_REF_NAME" \
+            --notes "Secretless OTA image (reuses each device's NVS seed)."
+    permissions:
+      contents: write
