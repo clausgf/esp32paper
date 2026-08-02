@@ -191,10 +191,15 @@ Everything flows through nice4iot:
 - **App telemetry** (`kind = "epaper"`), sent in the refresh overlap. Live:
   `connect_ms`, `net_ms`, `active_ms`, `image_status`, `image_bytes`,
   `image_maxage_s`, `displayed`, `heap_free`, `sleep_s`, `panel` (active id),
-  `panels` (compiled-in panel ids). From the previous cycle
-  (buffered in RTC RAM, since they only complete after the refresh):
-  `last_cycle_ms`, `last_refresh_ms`, `last_decode_transfer_ms`, and
-  `deferred_cycles` (silent `304` wakes skipped since the last POST).
+  `panels` (compiled-in panel ids). From the previous cycle (buffered in RTC RAM,
+  since they only complete after the refresh / WiFi-off): `last_cycle_ms`,
+  `last_refresh_ms`, `last_decode_transfer_ms`, `last_radio_on_ms` (WiFi-on
+  window — the dominant energy metric), and `deferred_cycles` (silent `304` wakes
+  skipped since the last POST). Together these let the phase durations be
+  reconstructed without the serial log.
+- **Serial phase markers** — `panel refresh: start` / `… done in X ms`, `WiFi off
+  — radio on for X ms`, and an end-of-cycle `cycle phases [ms]: connect=… net=…
+  decode_transfer=… refresh=… radio_on=… active=…` summary.
 - **Logging** — buffered, flushed in the overlap before WiFi off.
 
 ### Memory & paging

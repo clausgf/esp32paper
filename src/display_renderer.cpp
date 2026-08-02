@@ -140,7 +140,10 @@ static uint32_t s_refreshStartMs = 0;
 static void busyTrampoline(const void *)
 {
     if (s_refreshStartMs == 0)
+    {
         s_refreshStartMs = millis(); // first BUSY wait ~= refresh start
+        log_i("panel refresh: start");
+    }
     if (!s_duringRefreshDone && s_duringRefresh)
     {
         s_duringRefreshDone = true; // set first: re-entrancy safe
@@ -206,6 +209,8 @@ bool DisplayRenderer::renderImage(const uint8_t *png, size_t len,
     uint32_t refreshStart = s_refreshStartMs ? s_refreshStartMs : renderEnd;
     _lastDecodeTransferMs = refreshStart - renderStart;
     _lastRefreshMs = renderEnd - refreshStart;
+    log_i("panel refresh: done in %u ms (decode+transfer %u ms)",
+          (unsigned)_lastRefreshMs, (unsigned)_lastDecodeTransferMs);
     return true;
 }
 

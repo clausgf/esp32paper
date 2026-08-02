@@ -71,9 +71,10 @@ struct RtcTelemetry
     int32_t  cycle_ms;           // total awake time of the previous cycle
     int32_t  refresh_ms;         // previous physical panel refresh
     int32_t  decode_transfer_ms; // previous PNG decode + transfer to panel RAM
+    int32_t  radio_on_ms;        // previous cycle's WiFi-on window (boot -> WiFi off)
     int32_t  deferred_cycles;    // 304 wakes since the last telemetry POST
 };
-RTC_DATA_ATTR static RtcTelemetry rtc_tel = {0, 0, 0, 0, 0};
+RTC_DATA_ATTR static RtcTelemetry rtc_tel = {0, 0, 0, 0, 0, 0};
 
 // Wall-clock time of the last OTA firmware check. The display refreshes far more
 // often than the firmware changes, so the check (a full HTTP round-trip) is
@@ -413,15 +414,18 @@ void setup()
     // else: keep the arduino4iot default (config "sleep_s")
 
     bool displayed = false;
+    unsigned long radioOnMs = 0; // WiFi-on window (boot -> WiFi off); set below
 
     // Switch the WiFi radio off (the single biggest saving) and the LED with it.
     auto radioOff = [&]()
     {
+        radioOnMs = millis() - tBoot; // the radio was on from boot until now
         api.closeConnection();
         WiFi.disconnect(true);
         WiFi.mode(WIFI_OFF);
         if (STATUS_LED_PIN >= 0)
             iot.setLed(false);
+        logger.info(LOG_TAG, "WiFi off — radio on for %lu ms", radioOnMs);
     };
 
     // Network housekeeping meant to overlap the (multi-second) e-paper refresh:
@@ -468,6 +472,7 @@ void setup()
             t.add("last_cycle_ms", rtc_tel.cycle_ms);
             t.add("last_refresh_ms", rtc_tel.refresh_ms);
             t.add("last_decode_transfer_ms", rtc_tel.decode_transfer_ms);
+            t.add("last_radio_on_ms", rtc_tel.radio_on_ms);
             t.add("deferred_cycles", rtc_tel.deferred_cycles);
             rtc_tel.magic = 0;          // consumed — don't resend if this errors out
             rtc_tel.deferred_cycles = 0;
@@ -541,8 +546,19 @@ void setup()
         rtc_tel.magic = RTC_TEL_MAGIC;
         rtc_tel.refresh_ms = (int32_t)displayRenderer.lastRefreshMs();
         rtc_tel.decode_transfer_ms = (int32_t)displayRenderer.lastDecodeTransferMs();
+        rtc_tel.radio_on_ms = (int32_t)radioOnMs;
         rtc_tel.cycle_ms = (int32_t)(millis() - tBoot);
         rtc_tel.deferred_cycles = 0;
+
+        // One-line phase summary on serial (durations also ship in telemetry as
+        // last_* next cycle, so the phases are reconstructable without the log).
+        logger.info(LOG_TAG,
+                    "cycle phases [ms]: connect=%u net=%u decode_transfer=%u "
+                    "refresh=%u radio_on=%u active=%u",
+                    (unsigned)connect_ms, (unsigned)net_ms,
+                    (unsigned)displayRenderer.lastDecodeTransferMs(),
+                    (unsigned)displayRenderer.lastRefreshMs(),
+                    (unsigned)radioOnMs, (unsigned)(millis() - tBoot));
     }
 
     // Recompute the schedule-aligned sleep now that the full active window
