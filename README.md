@@ -187,11 +187,11 @@ background — see [How it works](#how-it-works)).
 Everything flows through nice4iot:
 
 - **System telemetry** — battery, RSSI, boot count, durations, and firmware
-  identity (the arduino4iot standard set): `firmware_id` (full build string),
-  `firmware_version` and `firmware_commit` — the latter two are derived from
-  *this* repo's git at build time (nearest tag / `git rev-parse`, with `-dirty`)
-  by a script arduino4iot ships, so they identify the actual firmware with no
-  code here; `firmware_sha256` is the app-image hash.
+  identity (the arduino4iot standard set): `firmware_id` (full build string) and
+  `firmware_version` — a single `git describe --tags --dirty --always` of *this*
+  repo, derived at build time by a script arduino4iot ships (e.g. `0.11.0`, or
+  `0.11.0-3-gabc123-dirty` past a tag), so it identifies the actual firmware with
+  no code here; `firmware_sha256` is the app-image hash.
 - **App telemetry** (`kind = "epaper"`), sent in the refresh overlap. Live:
   `connect_ms`, `net_ms`, `active_ms`, `image_status`, `image_bytes`,
   `image_maxage_s`, `displayed`, `heap_free`, `sleep_s`, `panel` (active id),
