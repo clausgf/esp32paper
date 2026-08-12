@@ -12,6 +12,7 @@
 #include "panels.h"
 
 #include <SPI.h>
+#include <esp_sleep.h>
 #include <limits.h>
 #include <math.h>
 #include <pngle.h>
@@ -134,6 +135,16 @@ static bool decodePng(const uint8_t *data, size_t len, bool draw)
 // Trampoline so GxEPD2's C-style busy callback can invoke a std::function
 // exactly once during the refresh BUSY-wait. It also timestamps the first busy
 // wait, which marks the start of the physical panel refresh.
+//
+// GxEPD2 calls this in place of its delay(1) on *every* poll iteration of the
+// multi-second BUSY-wait. Once the one-shot housekeeping has run (which ends by
+// switching the radio off), there is nothing left to do but wait for the panel,
+// so we light-sleep the CPU in short slices instead of busy-polling at full
+// clock: the MCU drops from ~40 mA to ~0.8 mA for the bulk of the refresh, and on
+// each wake GxEPD2 re-reads BUSY and either finishes or naps once more. millis()/
+// micros() run off esp_timer, which keeps counting across light sleep, so the
+// phase timings and GxEPD2's own busy-timeout stay correct.
+static const uint64_t REFRESH_NAP_US = 20000; // 20 ms slices (refresh-done latency ≤ this)
 static std::function<void()> s_duringRefresh;
 static bool s_duringRefreshDone = false;
 static uint32_t s_refreshStartMs = 0;
@@ -147,8 +158,12 @@ static void busyTrampoline(const void *)
     if (!s_duringRefreshDone && s_duringRefresh)
     {
         s_duringRefreshDone = true; // set first: re-entrancy safe
-        s_duringRefresh();
+        s_duringRefresh();          // ends with the radio off
+        return;                     // let GxEPD2 re-check BUSY once before napping
     }
+    // Nap the CPU for the rest of the refresh instead of spinning on BUSY.
+    esp_sleep_enable_timer_wakeup(REFRESH_NAP_US);
+    esp_light_sleep_start();
 }
 
 bool DisplayRenderer::renderImage(const uint8_t *png, size_t len,

@@ -43,10 +43,12 @@ WiFi radio switched off part-way through:
 3. **GET image** with ETag / `If-None-Match`, using the **NVS-cached config** —
    `api.apiGet(".../ext/epaper/{project}/screens/{device}/image.png")`
 4. **Render** (paged, PNG re-decoded per page) + WiFi/battery overlay —
-   `displayRenderer.renderImage()`. While the panel refreshes (seconds, CPU
-   idle), a busy-callback runs the **housekeeping** — a throttled OTA check
-   (`fw_check_s`), a `config.json` refresh *for the next cycle*, telemetry and
-   log flush — then **switches WiFi off** before the refresh even finishes.
+   `displayRenderer.renderImage()`. While the panel refreshes (seconds), a
+   busy-callback runs the **housekeeping** — a throttled OTA check (`fw_check_s`),
+   a `config.json` refresh *for the next cycle*, telemetry and log flush — then
+   **switches WiFi off** before the refresh even finishes. For the remaining
+   multi-second BUSY-wait the CPU **light-sleeps** in ~20 ms slices (~0.8 mA
+   instead of busy-polling at full clock) until the panel signals done.
 5. **Deep sleep**, schedule-aligned — `iot.deepSleep()`
 
 The schedule lives on the server: nicepaper's `Cache-Control: max-age` from step
@@ -107,7 +109,8 @@ The `color_model` sent to nicepaper is derived from the panel.
 Set the panel per device in nice4iot's `config.json` (`"panel": "gxepd2_073e01"`);
 it is persisted in NVS so later boots (and pre-config error screens) use the
 right geometry. `EPAPER_DEFAULT_PANEL` sets the first-boot default (else the
-first enabled panel). Pins are identical for all Waveshare HATs (`src/config.h`).
+first enabled panel); this build ships it as `gxepd2_750_t7` (7.5" 800×480 b/w,
+e.g. the Seeed panel). Pins are identical for all Waveshare HATs (`src/config.h`).
 Requires `-DENABLE_GxEPD2_GFX=1` so the drivers share a common base (see
 `src/panels.h`). Spectra 6 renders 6 colours, ACeP 7 (incl. orange); their 192 KB
 bitmaps make paging mandatory — handled automatically
@@ -270,7 +273,10 @@ so **only its buffer** uses RAM. Firmware size (this build, all five panels,
   used from the NVS cache and refreshed in the background for the *next* cycle,
   the OTA check is throttled (`fw_check_s`), and OTA/telemetry/logs overlap the
   refresh via GxEPD2's busy callback (run-once, with a fallback) before WiFi
-  switches off. A `304` (unchanged) skips housekeeping entirely — radio straight
+  switches off. Once housekeeping is done and the radio is off, the CPU
+  **light-sleeps** through the rest of the multi-second refresh (the busy
+  callback naps in ~20 ms slices, ~0.8 mA vs. ~40 mA busy-polling) instead of
+  spinning on BUSY. A `304` (unchanged) skips housekeeping entirely — radio straight
   off, the wake merely counted as `deferred_cycles`. Sleep is **schedule-aligned**
   (`max-age − elapsed-since-fetch`) so wakeups don't drift late by the refresh.
   Scan-free WiFi reconnect + optional static IP come from arduino4iot. Watchdog
@@ -314,8 +320,13 @@ isn't worth it.
       a pre-config error screen renders on the compile-time default geometry
       (best effort) — wrong on a non-default device until config runs once.
 - [ ] **Verify the refresh/housekeeping overlap on hardware.** Busy-callback
-      timing, WiFi-off mid-refresh not disturbing the panel, and the 90 s
-      watchdog — confirm on a real (esp. 7-colour) device; measure sleep current.
+      timing, the light-sleep BUSY-wait sampling the panel correctly, WiFi-off
+      mid-refresh not disturbing the panel, and the 90 s watchdog — confirm on a
+      real (esp. 7-colour) device; measure the refresh-phase and sleep current.
+- [ ] **Per-wake TLS handshake + DHCP** dominate the (already lean) unchanged-image
+      wake. Tracked upstream: arduino4iot#3 (TLS session resumption across deep
+      sleep, ~2 s) and arduino4iot#4 (cache the DHCP lease in RTC, ~0.4 s) —
+      app picks them up for free once released.
 - [ ] **Confirm the extension endpoint accepts the device bearer token.** If
       nice4iot gates it only via per-project activation / `X-Api-Key` instead,
       switch to `apiForward` (losing header-driven sleep) — `image_path` is
