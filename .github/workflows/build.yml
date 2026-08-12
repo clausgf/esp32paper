@@ -40,7 +40,7 @@ jobs:
           cp .pio/build/waveshare_esp32_driver/firmware.bin dist/firmware.bin
 
       - name: Upload build artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: firmware
           path: dist/firmware.bin
