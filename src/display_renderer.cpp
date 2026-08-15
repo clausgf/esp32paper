@@ -152,6 +152,9 @@ static const uint64_t REFRESH_NAP_US = 20000; // 20 ms slices (refresh-done late
 static std::function<void()> s_duringRefresh;
 static bool s_duringRefreshDone = false;
 static uint32_t s_refreshStartMs = 0;
+#ifdef EPAPER_BUSY_PROBE
+static uint32_t s_probeMs = 0; // kept out of the phase timings (see renderImage)
+#endif
 static void busyTrampoline(const void *)
 {
     if (s_refreshStartMs == 0)
@@ -252,6 +255,11 @@ bool DisplayRenderer::renderImage(const uint8_t *png, size_t len,
     uint32_t refreshStart = s_refreshStartMs ? s_refreshStartMs : renderEnd;
     _lastDecodeTransferMs = refreshStart - renderStart;
     _lastRefreshMs = renderEnd - refreshStart;
+#ifdef EPAPER_BUSY_PROBE
+    // The probe runs inside initPanel_(), i.e. inside the decode+transfer
+    // window; discount it so the diagnostic build's timings stay comparable.
+    if (_lastDecodeTransferMs > s_probeMs) _lastDecodeTransferMs -= s_probeMs;
+#endif
     log_i("panel refresh: done in %u ms (decode+transfer %u ms)",
           (unsigned)_lastRefreshMs, (unsigned)_lastDecodeTransferMs);
     return true;
@@ -281,6 +289,7 @@ bool DisplayRenderer::renderImage(const uint8_t *png, size_t len,
 static void probeBusyLine_()
 {
     const uint32_t windowMs = 5000, stepMs = 2;
+    const uint32_t probeStart = millis();
     pinMode(EPD_BUSY, INPUT);
     pinMode(EPD_RST, OUTPUT);
 
@@ -309,6 +318,7 @@ static void probeBusyLine_()
           "%d change(s) in %u ms%s",
           EPD_BUSY, before, afterReset, last, changes, (unsigned)windowMs,
           changes ? trace.c_str() : " -- never toggled");
+    s_probeMs = millis() - probeStart;
 }
 #endif
 
