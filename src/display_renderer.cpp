@@ -261,6 +261,43 @@ bool DisplayRenderer::renderImage(const uint8_t *png, size_t len,
 // Panel setup
 // ***************************************************************************
 
+// Sample the BUSY line across a reset pulse.
+//
+// A BUSY line that never leaves one level breaks every driver, but in opposite
+// and equally misleading ways: a busy-active-LOW driver (GxEPD2_420) waits out
+// its full 10 s timeout per wait and prints "Busy Timeout!", while an
+// active-HIGH one (GxEPD2_420_GDEY042T81) sees "not busy" immediately, skips
+// the wait and lets hibernate() cut the refresh short — a sub-second "refresh"
+// that looks like success. Neither symptom points at the wire, so probe it
+// directly: a panel that is alive asserts BUSY for the duration of its
+// reset/init, so a pin that reads the same value across the whole window is
+// either unconnected, floating, or on a different GPIO than EPD_BUSY.
+#ifdef EPAPER_BUSY_PROBE
+static void probeBusyLine_()
+{
+    const int samples = 100, stepMs = 5; // 500 ms window: covers panel reset/init
+    pinMode(EPD_BUSY, INPUT);
+    pinMode(EPD_RST, OUTPUT);
+    int before = digitalRead(EPD_BUSY);
+
+    digitalWrite(EPD_RST, LOW);   // same pulse shape as GxEPD2's _reset(2)
+    delay(2);
+    digitalWrite(EPD_RST, HIGH);
+    delay(2);
+
+    int high = 0;
+    for (int i = 0; i < samples; i++)
+    {
+        if (digitalRead(EPD_BUSY)) high++;
+        delay(stepMs);
+    }
+    bool stuck = (high == 0 || high == samples) && before == (high ? 1 : 0);
+    log_i("BUSY probe (pin %d): pre-reset=%d, %d/%d samples HIGH over %d ms%s",
+          EPD_BUSY, before, high, samples, samples * stepMs,
+          stuck ? " -- STUCK, line never toggled: check wiring/panel power" : "");
+}
+#endif
+
 void DisplayRenderer::initPanel_()
 {
     // Resolve + create the panel driver on first use (heap; only the selected
@@ -285,6 +322,10 @@ void DisplayRenderer::initPanel_()
     pinMode(EPD_CS, OUTPUT);
     pinMode(EPD_DC, OUTPUT);
     pinMode(EPD_RST, OUTPUT);
+
+#ifdef EPAPER_BUSY_PROBE
+    probeBusyLine_(); // diagnostic only; GxEPD2's init() resets the panel again
+#endif
 
     // Remap the VSPI bus to the board's pins *before* init(): GxEPD2's init()
     // calls SPI.begin() internally, which early-returns once the bus is up, so
