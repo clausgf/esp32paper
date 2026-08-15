@@ -261,40 +261,54 @@ bool DisplayRenderer::renderImage(const uint8_t *png, size_t len,
 // Panel setup
 // ***************************************************************************
 
-// Sample the BUSY line across a reset pulse.
+// Trace the BUSY line across a reset pulse.
 //
-// A BUSY line that never leaves one level breaks every driver, but in opposite
-// and equally misleading ways: a busy-active-LOW driver (GxEPD2_420) waits out
-// its full 10 s timeout per wait and prints "Busy Timeout!", while an
-// active-HIGH one (GxEPD2_420_GDEY042T81) sees "not busy" immediately, skips
-// the wait and lets hibernate() cut the refresh short — a sub-second "refresh"
-// that looks like success. Neither symptom points at the wire, so probe it
-// directly: a panel that is alive asserts BUSY for the duration of its
-// reset/init, so a pin that reads the same value across the whole window is
-// either unconnected, floating, or on a different GPIO than EPD_BUSY.
+// A misbehaving BUSY line breaks every driver, but in opposite and equally
+// misleading ways: a busy-active-LOW driver (GxEPD2_420) waits out its full
+// 10 s timeout per wait and prints "Busy Timeout!", while an active-HIGH one
+// (GxEPD2_420_GDEY042T81) sees "not busy" immediately, skips the wait and lets
+// hibernate() cut the refresh short — a sub-second "refresh" that reads as a
+// success in the phase timings. Neither symptom distinguishes a wrong driver
+// from a flaky panel, so record what the pin actually does.
+//
+// A reset makes a healthy panel assert BUSY and release it again on its own, so
+// the trace answers both open questions at once: whether the line moves at all
+// (wiring), and which level means "busy" — the level it holds *during* the
+// reset is the busy one, which in turn identifies the right driver. Repeat runs
+// matter as much as one: identical firmware producing different traces means
+// the fault is electrical (seating, supply), not in the driver choice.
 #ifdef EPAPER_BUSY_PROBE
 static void probeBusyLine_()
 {
-    const int samples = 100, stepMs = 5; // 500 ms window: covers panel reset/init
+    const uint32_t windowMs = 5000, stepMs = 2;
     pinMode(EPD_BUSY, INPUT);
     pinMode(EPD_RST, OUTPUT);
-    int before = digitalRead(EPD_BUSY);
 
-    digitalWrite(EPD_RST, LOW);   // same pulse shape as GxEPD2's _reset(2)
+    int before = digitalRead(EPD_BUSY);
+    digitalWrite(EPD_RST, LOW); // same pulse shape as GxEPD2's _reset(2)
     delay(2);
     digitalWrite(EPD_RST, HIGH);
-    delay(2);
 
-    int high = 0;
-    for (int i = 0; i < samples; i++)
+    String trace;
+    int last = digitalRead(EPD_BUSY), changes = 0;
+    const int afterReset = last; // level the panel takes right after RST rises
+    uint32_t t0 = millis();
+    while (millis() - t0 < windowMs)
     {
-        if (digitalRead(EPD_BUSY)) high++;
+        int v = digitalRead(EPD_BUSY);
+        if (v != last)
+        {
+            if (changes < 12) // cap the line length; the count still tells all
+                trace += " " + String(millis() - t0) + "ms->" + v;
+            last = v;
+            changes++;
+        }
         delay(stepMs);
     }
-    bool stuck = (high == 0 || high == samples) && before == (high ? 1 : 0);
-    log_i("BUSY probe (pin %d): pre-reset=%d, %d/%d samples HIGH over %d ms%s",
-          EPD_BUSY, before, high, samples, samples * stepMs,
-          stuck ? " -- STUCK, line never toggled: check wiring/panel power" : "");
+    log_i("BUSY probe (pin %d): pre-reset=%d, post-reset=%d, settled=%d, "
+          "%d change(s) in %u ms%s",
+          EPD_BUSY, before, afterReset, last, changes, (unsigned)windowMs,
+          changes ? trace.c_str() : " -- never toggled");
 }
 #endif
 
