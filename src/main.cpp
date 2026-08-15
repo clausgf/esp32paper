@@ -228,9 +228,6 @@ static ImageResult fetchImage(const AppConfig &cfg)
     ImageResult r;
 
     String path = cfg.imagePath;
-    String colorModel = displayRenderer.colorModel(); // derived from the active panel
-    if (colorModel.length())
-        path += "?color_model=" + colorModel;
 
     std::map<String, String> reqHeaders;
     reqHeaders["Accept"] = "image/png";
