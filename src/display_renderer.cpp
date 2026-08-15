@@ -169,8 +169,12 @@ static void busyTrampoline(const void *)
         return;                     // let GxEPD2 re-check BUSY once before napping
     }
     // Nap the CPU for the rest of the refresh instead of spinning on BUSY.
+#if EPAPER_REFRESH_LIGHTSLEEP
     esp_sleep_enable_timer_wakeup(REFRESH_NAP_US);
     esp_light_sleep_start();
+#else
+    delay(REFRESH_NAP_US / 1000); // same cadence, no light sleep
+#endif
 }
 
 bool DisplayRenderer::renderImage(const uint8_t *png, size_t len,
