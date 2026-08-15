@@ -278,7 +278,12 @@ void DisplayRenderer::initPanel_()
     SPI.end();
     SPI.begin(EPD_SCK, EPD_MISO, EPD_MOSI, EPD_CS);
 
-    gx->init(/*serial_diag_bitrate*/ 0, /*initial*/ true, /*reset_duration*/ 2,
+    // A non-zero diag bitrate sets GxEPD2's _diag_enabled, which makes
+    // _waitWhileBusy print "<comment> : <elapsed_us>" for every BUSY wait. Our
+    // phase timings only ever showed the sum of _PowerOn and _Update_Full, which
+    // cannot distinguish "the panel never asserted BUSY and the wait fell
+    // through" from "the panel refreshed but nothing became visible".
+    gx->init(/*serial_diag_bitrate*/ 115200, /*initial*/ true, /*reset_duration*/ 2,
              /*pulldown_rst_mode*/ false);
     gx->setRotation(_rotation);
     gx->setTextColor(GxEPD_BLACK);
