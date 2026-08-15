@@ -46,11 +46,13 @@ static const int BATTERY_MIN_MV   = 3300; // undervoltage shutdown threshold
 //
 //   flag                   id "panel"         panel                        color_model
 //   EPAPER_PANEL_42_BW     gxepd2_420         4.2"  400x300 b/w            bw
+//   EPAPER_PANEL_42_BWR    gxepd2_420c_z15    4.2"  400x300 b/w/red        bwr
 //   EPAPER_PANEL_75_BW     gxepd2_750_t7      7.5"  800x480 b/w            bw
 //   EPAPER_PANEL_75_BWR    gxepd2_750c_z90    7.5"  800x480 b/w/red        bwr
 //   EPAPER_PANEL_73_E6     gxepd2_073e01      7.3"  800x480 Spectra 6      e6
 //   EPAPER_PANEL_73_7C     gxepd2_acep_730    7.3"  800x480 ACeP 7-colour  c7
-#if !defined(EPAPER_PANEL_42_BW) && !defined(EPAPER_PANEL_75_BW) && \
+#if !defined(EPAPER_PANEL_42_BW) && !defined(EPAPER_PANEL_42_BWR) && \
+    !defined(EPAPER_PANEL_75_BW) && \
     !defined(EPAPER_PANEL_75_BWR) && !defined(EPAPER_PANEL_73_E6) && \
     !defined(EPAPER_PANEL_73_7C)
 #define EPAPER_PANEL_42_BW 1
