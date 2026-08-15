@@ -518,8 +518,13 @@ void setup()
         }
         else
         {
-            // invalid PNG or wrong size: housekeeping did not run, WiFi still up
+            // invalid PNG or wrong size: housekeeping did not run, WiFi still up.
+            // Refresh the config before giving up: a wrong panel (hence a wrong
+            // canvas size) is itself a likely cause here, and the cached value
+            // would otherwise never be replaced -- the device would keep failing
+            // on the same stale config forever.
             displayed = false;
+            config.updateConfig();
             const String &detail = displayRenderer.renderErrorDetail();
             failScreen(ErrorIcon::Warning, "Image error",
                        detail.length() ? detail
