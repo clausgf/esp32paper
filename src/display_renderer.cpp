@@ -207,6 +207,17 @@ bool DisplayRenderer::renderImage(const uint8_t *png, size_t len,
           _panelId.c_str(), (unsigned)ESP.getFreeHeap(),
           gx->pages(), gx->pageHeight());
 
+    // DIAGNOSTIC (remove once the panel is understood): drive the panel to plain
+    // white before rendering. The BUSY handshake and the power timings check out,
+    // yet _Update_Full finishes in well under half its reference duration and
+    // nothing appears. clearScreen() asks the same, now confirmed driver for the
+    // simplest possible full refresh, which separates a dead display layer from a
+    // problem in our image path -- a panel that will not even go white is broken.
+    log_i("clearScreen: start");
+    uint32_t clearStart = millis();
+    gx->clearScreen();
+    log_i("clearScreen: done in %u ms", (unsigned)(millis() - clearStart));
+
     // Overlap the slow physical refresh with the caller's housekeeping, and let
     // the busy callback timestamp the refresh start for phase timing.
     s_duringRefresh = duringRefresh;
