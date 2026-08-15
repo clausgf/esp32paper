@@ -20,6 +20,7 @@
 #include <GxEPD2_3C.h>
 #include <GxEPD2_7C.h>
 #include <epd/GxEPD2_420.h>
+#include <gdey/GxEPD2_420_GDEY042T81.h>
 #include <epd/GxEPD2_750_T7.h>
 #include <epd3c/GxEPD2_750c_Z90.h>
 #include <epd7c/GxEPD2_730c_GDEP073E01.h>
@@ -85,6 +86,11 @@ static constexpr uint16_t epdPageRows(int rowBytes, int height)
 #else
 #  define EPD_ROW_42_BW(X)
 #endif
+#ifdef EPAPER_PANEL_42_BW_T81
+#  define EPD_ROW_42_BW_T81(X) X("gxepd2_420_t81", GxEPD2_BW, GxEPD2_420_GDEY042T81, 8, "bw", ColorMode::BW)
+#else
+#  define EPD_ROW_42_BW_T81(X)
+#endif
 #ifdef EPAPER_PANEL_75_BW
 #  define EPD_ROW_75_BW(X) X("gxepd2_750_t7", GxEPD2_BW, GxEPD2_750_T7, 8, "bw", ColorMode::BW)
 #else
@@ -108,6 +114,7 @@ static constexpr uint16_t epdPageRows(int rowBytes, int height)
 
 #define EPAPER_FOR_EACH_PANEL(X) \
     EPD_ROW_42_BW(X)  \
+    EPD_ROW_42_BW_T81(X) \
     EPD_ROW_75_BW(X)  \
     EPD_ROW_75_BWR(X) \
     EPD_ROW_73_E6(X)  \

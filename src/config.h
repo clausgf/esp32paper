@@ -44,13 +44,21 @@ static const int BATTERY_MIN_MV   = 3300; // undervoltage shutdown threshold
 // the runtime-selected panel allocates its page buffer, so unused ones cost
 // flash but no RAM. See src/panels.h for the registry / colour models.
 //
-//   flag                 id "panel"         panel                        color_model
-//   EPAPER_PANEL_42_BW   gxepd2_420         4.2"  400x300 b/w            bw
-//   EPAPER_PANEL_75_BW   gxepd2_750_t7      7.5"  800x480 b/w            bw
-//   EPAPER_PANEL_75_BWR  gxepd2_750c_z90    7.5"  800x480 b/w/red        bwr
-//   EPAPER_PANEL_73_E6   gxepd2_073e01      7.3"  800x480 Spectra 6      e6
-//   EPAPER_PANEL_73_7C   gxepd2_acep_730    7.3"  800x480 ACeP 7-colour  c7
-#if !defined(EPAPER_PANEL_42_BW) && !defined(EPAPER_PANEL_75_BW) && \
+//   flag                   id "panel"         panel                        color_model
+//   EPAPER_PANEL_42_BW     gxepd2_420         4.2"  400x300 b/w            bw
+//   EPAPER_PANEL_42_BW_T81 gxepd2_420_t81     4.2"  400x300 b/w            bw
+//   EPAPER_PANEL_75_BW     gxepd2_750_t7      7.5"  800x480 b/w            bw
+//   EPAPER_PANEL_75_BWR    gxepd2_750c_z90    7.5"  800x480 b/w/red        bwr
+//   EPAPER_PANEL_73_E6     gxepd2_073e01      7.3"  800x480 Spectra 6      e6
+//   EPAPER_PANEL_73_7C     gxepd2_acep_730    7.3"  800x480 ACeP 7-colour  c7
+//
+// The two 4.2" rows share geometry (400x300 b/w) but differ in controller, and
+// crucially in BUSY polarity: gxepd2_420 is the older IL0398 / GDEW042T2 panel
+// (BUSY active LOW), gxepd2_420_t81 the newer SSD1683 / GDEY042T81 (BUSY active
+// HIGH). Picking the wrong one still transfers the image, but every BUSY wait
+// runs into its 10 s timeout ("Busy Timeout!") and the panel never refreshes.
+#if !defined(EPAPER_PANEL_42_BW) && !defined(EPAPER_PANEL_42_BW_T81) && \
+    !defined(EPAPER_PANEL_75_BW) && \
     !defined(EPAPER_PANEL_75_BWR) && !defined(EPAPER_PANEL_73_E6) && \
     !defined(EPAPER_PANEL_73_7C)
 #define EPAPER_PANEL_42_BW 1
