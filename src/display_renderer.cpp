@@ -103,7 +103,8 @@ static void onPngDraw(pngle_t *, uint32_t x, uint32_t y,
 // Decode the whole PNG once. With draw=false it only validates (checks for a
 // decode error and a valid size); with draw=true it paints onto the current
 // GxEPD2 page. Fed in small chunks so the task watchdog stays fed.
-static bool decodePng(const uint8_t *data, size_t len, bool draw)
+static bool decodePng(const uint8_t *data, size_t len, bool draw,
+                      uint32_t *outW = nullptr, uint32_t *outH = nullptr)
 {
     s_drawEnabled = draw;
     pngle_t *pngle = pngle_new();
@@ -127,8 +128,11 @@ static bool decodePng(const uint8_t *data, size_t len, bool draw)
         fed += (size_t)used;
         yield(); // keep the watchdog happy on large images
     }
-    if (ok && pngle_get_width(pngle) == 0) ok = false;
+    uint32_t w = pngle_get_width(pngle), h = pngle_get_height(pngle);
+    if (ok && w == 0) ok = false;
     pngle_destroy(pngle);
+    if (outW) *outW = w;
+    if (outH) *outH = h;
     return ok;
 }
 
@@ -183,8 +187,32 @@ bool DisplayRenderer::renderImage(const uint8_t *png, size_t len,
     // multi-page rendering earlier pages would already be committed otherwise.
     // (Runs before any housekeeping, so an invalid PNG leaves WiFi untouched for
     // the caller's error screen.)
-    if (!decodePng(png, len, /*draw*/ false))
+    _renderErrorDetail = "";
+    uint32_t imgW = 0, imgH = 0;
+    if (!decodePng(png, len, /*draw*/ false, &imgW, &imgH))
         return false;
+
+    // The image must exactly fill the panel canvas (post-rotation). GxEPD2 would
+    // otherwise silently clip/misplace a valid-but-wrong-sized PNG — garbage on
+    // the panel with no error. nicepaper renders the screen at the panel size, so
+    // a mismatch is a server-side size/orientation problem: surface it as an
+    // error screen rather than rendering nonsense.
+    uint16_t panelW = 0, panelH = 0;
+    if (const PanelInfo *pi = epdPanelInfo(_panelId.c_str()))
+    {
+        panelW = pi->width;
+        panelH = pi->height;
+        if (_rotation & 1) { uint16_t t = panelW; panelW = panelH; panelH = t; }
+    }
+    if (panelW && (imgW != panelW || imgH != panelH))
+    {
+        log_e("image %ux%u does not match panel '%s' %ux%u (rotation %d)",
+              (unsigned)imgW, (unsigned)imgH, _panelId.c_str(),
+              (unsigned)panelW, (unsigned)panelH, _rotation);
+        _renderErrorDetail = String("Image is ") + imgW + "x" + imgH +
+                             ",\npanel is " + panelW + "x" + panelH + ".";
+        return false;
+    }
 
     uint32_t renderStart = millis();
     s_refreshStartMs = 0;

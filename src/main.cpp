@@ -320,6 +320,11 @@ void setup()
         iot.setBatteryMin_mV(BATTERY_MIN_MV);
     }
 
+    // Reuse the cached DHCP lease on a scan-free fast reconnect to skip the DHCP
+    // DORA (~0.3–0.5 s/wake); arduino4iot renews via real DHCP every N wakeups and
+    // falls back to DHCP on a stale lease. Must be set before iot.begin().
+    iot.setDhcpCache(true);
+
     // --- panel: for a multi-panel build, use the NVS-persisted panel so a
     //     pre-config error screen renders on the right geometry ("" keeps the
     //     compiled-in default). config.json refines this below (best effort:
@@ -513,10 +518,13 @@ void setup()
         }
         else
         {
-            // invalid PNG: housekeeping did not run, WiFi still up for the error
+            // invalid PNG or wrong size: housekeeping did not run, WiFi still up
             displayed = false;
+            const String &detail = displayRenderer.renderErrorDetail();
             failScreen(ErrorIcon::Warning, "Image error",
-                       "The received image\nis not a valid PNG.", retry_s);
+                       detail.length() ? detail
+                                       : "The received image\nis not a valid PNG.",
+                       retry_s);
         }
     }
     else if (img.status < 0)

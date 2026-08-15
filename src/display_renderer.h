@@ -55,7 +55,8 @@ public:
     String supportedPanels() const;
 
     // Decode the in-memory PNG and refresh the panel (paged), adding the
-    // status overlay. Returns false if the PNG is invalid (panel untouched).
+    // status overlay. Returns false if the PNG is invalid or its size does not
+    // match the panel (panel untouched); renderErrorDetail() then explains why.
     //
     // The e-paper refresh is slow (seconds) and mostly a BUSY-wait with the CPU
     // idle. `duringRefresh`, if given, is run exactly once during that wait
@@ -80,6 +81,11 @@ public:
     uint32_t lastDecodeTransferMs() const { return _lastDecodeTransferMs; }
     uint32_t lastRefreshMs() const { return _lastRefreshMs; }
 
+    // When renderImage() returned false, an optional extra line describing why:
+    // empty means "not a valid PNG"; non-empty is a specific reason (e.g. the
+    // decoded image does not match the panel size). For the caller's error screen.
+    const String &renderErrorDetail() const { return _renderErrorDetail; }
+
 private:
     void initPanel_();                           // create driver + SPI + init
     void applyPanel_(const char *id);            // set id/colorModel/colorMode
@@ -90,6 +96,7 @@ private:
     int _rotation = 0;
     String _panelId;                 // active panel id ("" until resolved)
     String _colorModel = "bw";       // nicepaper color_model of the active panel
+    String _renderErrorDetail;       // reason detail when the last render failed
     uint32_t _lastDecodeTransferMs = 0;
     uint32_t _lastRefreshMs = 0;
 };

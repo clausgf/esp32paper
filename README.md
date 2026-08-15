@@ -37,7 +37,8 @@ WiFi radio switched off part-way through:
 
 1. **Connect** WiFi + NTP — `iot.begin()`. arduino4iot caches the last-good
    BSSID + channel in RTC RAM for a **scan-free reconnect** and throttles NTP
-   resync to ~24 h; `iot.setStaticIp(...)` additionally skips DHCP if wanted.
+   resync to ~24 h; a **cached DHCP lease** (`iot.setDhcpCache()`, enabled here)
+   reuses the last IP on the fast-reconnect path to skip the DHCP DORA.
 2. **Provision** — `api.updateProvisioning()` (no round-trip while the device
    token is still valid)
 3. **GET image** with ETag / `If-None-Match`, using the **NVS-cached config** —
@@ -69,7 +70,7 @@ and telemetry catch up on the next cycle that actually refreshes.
 Serious failures show a **full-screen error page** and retry after
 `error_retry_s`; the message matches the cause — no WiFi vs. failed NTP, no
 server connection vs. provisioning rejected (classified from arduino4iot's typed
-`IotResult`), or a missing/invalid image.
+`IotResult`), or a missing / invalid / wrong-sized image.
 
 ## Getting started
 
@@ -268,7 +269,9 @@ so **only its buffer** uses RAM. Firmware size (this build, all five panels,
   retry after `error_retry_s`, so a blank/frozen panel never hides a fault. The
   cause is classified from arduino4iot's typed `IotResult` — transport/TLS vs.
   HTTP 403 vs. no-token vs. malformed body — so the screen is specific, not
-  generic (no reachability guesswork).
+  generic (no reachability guesswork). A valid PNG whose size ≠ the panel
+  (rotation-aware) is rejected too, with the got-vs-expected dimensions — else
+  GxEPD2 would silently clip/misplace it and show garbage with no error.
 - **Energy** — as little as possible on the radio-on critical path: config is
   used from the NVS cache and refreshed in the background for the *next* cycle,
   the OTA check is throttled (`fw_check_s`), and OTA/telemetry/logs overlap the
@@ -279,7 +282,8 @@ so **only its buffer** uses RAM. Firmware size (this build, all five panels,
   spinning on BUSY. A `304` (unchanged) skips housekeeping entirely — radio straight
   off, the wake merely counted as `deferred_cycles`. Sleep is **schedule-aligned**
   (`max-age − elapsed-since-fetch`) so wakeups don't drift late by the refresh.
-  Scan-free WiFi reconnect + optional static IP come from arduino4iot. Watchdog
+  Scan-free WiFi reconnect + cached DHCP lease (`setDhcpCache`) come from
+  arduino4iot, skipping the scan and DHCP DORA each wake. Watchdog
   widened to 90 s for the long refresh. Caveat: a real OTA *download* in that
   window reboots mid-refresh (harmless, re-rendered next boot).
 - **End-of-cycle timings buffered in RTC RAM** — `refresh_ms`/
@@ -323,10 +327,10 @@ isn't worth it.
       timing, the light-sleep BUSY-wait sampling the panel correctly, WiFi-off
       mid-refresh not disturbing the panel, and the 90 s watchdog — confirm on a
       real (esp. 7-colour) device; measure the refresh-phase and sleep current.
-- [ ] **Per-wake TLS handshake + DHCP** dominate the (already lean) unchanged-image
-      wake. Tracked upstream: arduino4iot#3 (TLS session resumption across deep
-      sleep, ~2 s) and arduino4iot#4 (cache the DHCP lease in RTC, ~0.4 s) —
-      app picks them up for free once released.
+- [ ] **Per-wake TLS handshake** still dominates the (already lean) unchanged-image
+      wake. Tracked upstream as arduino4iot#3 (TLS session resumption across deep
+      sleep, ~2 s) — not yet released. DHCP is already skipped (arduino4iot#4 →
+      `setDhcpCache`, shipped in v3.4 and enabled here, ~0.4 s).
 - [ ] **Confirm the extension endpoint accepts the device bearer token.** If
       nice4iot gates it only via per-project activation / `X-Api-Key` instead,
       switch to `apiForward` (losing header-driven sleep) — `image_path` is
