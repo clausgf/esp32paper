@@ -12,7 +12,6 @@
 #include "panels.h"
 
 #include <SPI.h>
-#include <esp_sleep.h>
 #include <limits.h>
 #include <math.h>
 #include <pngle.h>
@@ -139,22 +138,9 @@ static bool decodePng(const uint8_t *data, size_t len, bool draw,
 // Trampoline so GxEPD2's C-style busy callback can invoke a std::function
 // exactly once during the refresh BUSY-wait. It also timestamps the first busy
 // wait, which marks the start of the physical panel refresh.
-//
-// GxEPD2 calls this in place of its delay(1) on *every* poll iteration of the
-// multi-second BUSY-wait. Once the one-shot housekeeping has run (which ends by
-// switching the radio off), there is nothing left to do but wait for the panel,
-// so we light-sleep the CPU in short slices instead of busy-polling at full
-// clock: the MCU drops from ~40 mA to ~0.8 mA for the bulk of the refresh, and on
-// each wake GxEPD2 re-reads BUSY and either finishes or naps once more. millis()/
-// micros() run off esp_timer, which keeps counting across light sleep, so the
-// phase timings and GxEPD2's own busy-timeout stay correct.
-static const uint64_t REFRESH_NAP_US = 20000; // 20 ms slices (refresh-done latency ≤ this)
 static std::function<void()> s_duringRefresh;
 static bool s_duringRefreshDone = false;
 static uint32_t s_refreshStartMs = 0;
-#ifdef EPAPER_BUSY_PROBE
-static uint32_t s_probeMs = 0; // kept out of the phase timings (see renderImage)
-#endif
 static void busyTrampoline(const void *)
 {
     if (s_refreshStartMs == 0)
@@ -165,16 +151,8 @@ static void busyTrampoline(const void *)
     if (!s_duringRefreshDone && s_duringRefresh)
     {
         s_duringRefreshDone = true; // set first: re-entrancy safe
-        s_duringRefresh();          // ends with the radio off
-        return;                     // let GxEPD2 re-check BUSY once before napping
+        s_duringRefresh();
     }
-    // Nap the CPU for the rest of the refresh instead of spinning on BUSY.
-#if EPAPER_REFRESH_LIGHTSLEEP
-    esp_sleep_enable_timer_wakeup(REFRESH_NAP_US);
-    esp_light_sleep_start();
-#else
-    delay(REFRESH_NAP_US / 1000); // same cadence, no light sleep
-#endif
 }
 
 bool DisplayRenderer::renderImage(const uint8_t *png, size_t len,
@@ -259,11 +237,6 @@ bool DisplayRenderer::renderImage(const uint8_t *png, size_t len,
     uint32_t refreshStart = s_refreshStartMs ? s_refreshStartMs : renderEnd;
     _lastDecodeTransferMs = refreshStart - renderStart;
     _lastRefreshMs = renderEnd - refreshStart;
-#ifdef EPAPER_BUSY_PROBE
-    // The probe runs inside initPanel_(), i.e. inside the decode+transfer
-    // window; discount it so the diagnostic build's timings stay comparable.
-    if (_lastDecodeTransferMs > s_probeMs) _lastDecodeTransferMs -= s_probeMs;
-#endif
     log_i("panel refresh: done in %u ms (decode+transfer %u ms)",
           (unsigned)_lastRefreshMs, (unsigned)_lastDecodeTransferMs);
     return true;
@@ -272,59 +245,6 @@ bool DisplayRenderer::renderImage(const uint8_t *png, size_t len,
 // ***************************************************************************
 // Panel setup
 // ***************************************************************************
-
-// Trace the BUSY line across a reset pulse.
-//
-// A misbehaving BUSY line breaks every driver, but in opposite and equally
-// misleading ways: a busy-active-LOW driver (GxEPD2_420) waits out its full
-// 10 s timeout per wait and prints "Busy Timeout!", while an active-HIGH one
-// (GxEPD2_420_GDEY042T81) sees "not busy" immediately, skips the wait and lets
-// hibernate() cut the refresh short — a sub-second "refresh" that reads as a
-// success in the phase timings. Neither symptom distinguishes a wrong driver
-// from a flaky panel, so record what the pin actually does.
-//
-// A reset makes a healthy panel assert BUSY and release it again on its own, so
-// the trace answers both open questions at once: whether the line moves at all
-// (wiring), and which level means "busy" — the level it holds *during* the
-// reset is the busy one, which in turn identifies the right driver. Repeat runs
-// matter as much as one: identical firmware producing different traces means
-// the fault is electrical (seating, supply), not in the driver choice.
-#ifdef EPAPER_BUSY_PROBE
-static void probeBusyLine_()
-{
-    const uint32_t windowMs = 5000, stepMs = 2;
-    const uint32_t probeStart = millis();
-    pinMode(EPD_BUSY, INPUT);
-    pinMode(EPD_RST, OUTPUT);
-
-    int before = digitalRead(EPD_BUSY);
-    digitalWrite(EPD_RST, LOW); // same pulse shape as GxEPD2's _reset(2)
-    delay(2);
-    digitalWrite(EPD_RST, HIGH);
-
-    String trace;
-    int last = digitalRead(EPD_BUSY), changes = 0;
-    const int afterReset = last; // level the panel takes right after RST rises
-    uint32_t t0 = millis();
-    while (millis() - t0 < windowMs)
-    {
-        int v = digitalRead(EPD_BUSY);
-        if (v != last)
-        {
-            if (changes < 12) // cap the line length; the count still tells all
-                trace += " " + String(millis() - t0) + "ms->" + v;
-            last = v;
-            changes++;
-        }
-        delay(stepMs);
-    }
-    log_i("BUSY probe (pin %d): pre-reset=%d, post-reset=%d, settled=%d, "
-          "%d change(s) in %u ms%s",
-          EPD_BUSY, before, afterReset, last, changes, (unsigned)windowMs,
-          changes ? trace.c_str() : " -- never toggled");
-    s_probeMs = millis() - probeStart;
-}
-#endif
 
 void DisplayRenderer::initPanel_()
 {
@@ -350,10 +270,6 @@ void DisplayRenderer::initPanel_()
     pinMode(EPD_CS, OUTPUT);
     pinMode(EPD_DC, OUTPUT);
     pinMode(EPD_RST, OUTPUT);
-
-#ifdef EPAPER_BUSY_PROBE
-    probeBusyLine_(); // diagnostic only; GxEPD2's init() resets the panel again
-#endif
 
     // Remap the VSPI bus to the board's pins *before* init(): GxEPD2's init()
     // calls SPI.begin() internally, which early-returns once the bus is up, so

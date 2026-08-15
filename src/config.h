@@ -46,25 +46,11 @@ static const int BATTERY_MIN_MV   = 3300; // undervoltage shutdown threshold
 //
 //   flag                   id "panel"         panel                        color_model
 //   EPAPER_PANEL_42_BW     gxepd2_420         4.2"  400x300 b/w            bw
-//   EPAPER_PANEL_42_BW_T81 gxepd2_420_t81     4.2"  400x300 b/w            bw
-//   EPAPER_PANEL_42_BWR    gxepd2_420c_z15    4.2"  400x300 b/w/red        bwr
 //   EPAPER_PANEL_75_BW     gxepd2_750_t7      7.5"  800x480 b/w            bw
 //   EPAPER_PANEL_75_BWR    gxepd2_750c_z90    7.5"  800x480 b/w/red        bwr
 //   EPAPER_PANEL_73_E6     gxepd2_073e01      7.3"  800x480 Spectra 6      e6
 //   EPAPER_PANEL_73_7C     gxepd2_acep_730    7.3"  800x480 ACeP 7-colour  c7
-//
-// The two 4.2" rows share geometry (400x300 b/w) but differ in controller, and
-// crucially in BUSY polarity: gxepd2_420 is the older IL0398 / GDEW042T2 panel
-// (BUSY active LOW), gxepd2_420_t81 the newer SSD1683 / GDEY042T81 (BUSY active
-// HIGH). Picking the wrong one still transfers the image, but every BUSY wait
-// runs into its 10 s timeout ("Busy Timeout!") and the panel never refreshes.
-// The 4.2" b/w/red panel (WFT0420CZ15 / GDEW042Z15) shares its geometry with the
-// two b/w ones but needs far more time: GxEPD2_420c allows a 20 s busy timeout
-// for a ~16 s full refresh, where the b/w GxEPD2_420 gives up after 10 s. Driving
-// this panel with a b/w driver therefore cannot ever finish a refresh -- it aborts
-// mid-update and leaves the panel dark.
-#if !defined(EPAPER_PANEL_42_BW) && !defined(EPAPER_PANEL_42_BW_T81) && \
-    !defined(EPAPER_PANEL_42_BWR) && !defined(EPAPER_PANEL_75_BW) && \
+#if !defined(EPAPER_PANEL_42_BW) && !defined(EPAPER_PANEL_75_BW) && \
     !defined(EPAPER_PANEL_75_BWR) && !defined(EPAPER_PANEL_73_E6) && \
     !defined(EPAPER_PANEL_73_7C)
 #define EPAPER_PANEL_42_BW 1
@@ -75,12 +61,6 @@ static const int BATTERY_MIN_MV   = 3300; // undervoltage shutdown threshold
 // device whose real panel differs, an early error screen may render on the
 // wrong geometry until config.json (or NVS) supplies the correct panel.
 // #define EPAPER_DEFAULT_PANEL "gxepd2_420"
-
-// Light-sleep the CPU through the panel's BUSY wait (see busyTrampoline). Set to
-// 0 to fall back to a plain delay() if a panel misbehaves across light sleep.
-#ifndef EPAPER_REFRESH_LIGHTSLEEP
-#define EPAPER_REFRESH_LIGHTSLEEP 1
-#endif
 
 // GxEPD2 page-buffer byte budget: the per-panel page height is derived from
 // this so every panel fits without PSRAM. Raise it for fewer PNG re-decodes
