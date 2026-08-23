@@ -29,7 +29,7 @@ jobs:
           key: pio-${{ runner.os }}-${{ hashFiles('platformio.ini') }}
 
       - name: Install PlatformIO
-        run: pip install 'platformio==6.1.19'
+        run: pip install 'platformio==6.1.19' 'esptool==4.8.1'
 
       - name: Build (secretless / generic OTA image, both targets)
         run: pio run
@@ -45,36 +45,35 @@ jobs:
       # write_flash 0x0 merged-<board>.bin`) for initial/blank-board flashing,
       # plus a human-readable dump of each board's partition table. Offsets
       # and flash_mode/freq/size below match what `pio run -t upload -v`
-      # prints for each env; esptool.py and gen_esp32part.py come from the
-      # PlatformIO packages `pio run` just fetched, run via PlatformIO's own
-      # venv so their dependencies are guaranteed present.
+      # prints for each env. gen_esp32part.py is pure stdlib (comes from the
+      # arduino-esp32 framework package `pio run` just fetched); esptool.py is
+      # the pip package installed above (~/.platformio/penv only exists for a
+      # full PlatformIO Core install, not this pip-installed one).
       - name: Build full-flash images + readable partition tables
         run: |
-          PIO_PYTHON=~/.platformio/penv/bin/python
-          ESPTOOL=~/.platformio/packages/tool-esptoolpy/esptool.py
           GENPART=~/.platformio/packages/framework-arduinoespressif32/tools/gen_esp32part.py
           BOOT_APP0=~/.platformio/packages/framework-arduinoespressif32/tools/partitions/boot_app0.bin
 
           # waveshare_esp32_driver: ESP32-WROOM-32 (esp32), 4 MB flash, bootloader @ 0x1000
-          "$PIO_PYTHON" "$ESPTOOL" --chip esp32 merge_bin \
+          esptool.py --chip esp32 merge_bin \
             -o dist/merged-waveshare_esp32_driver.bin \
             --flash_mode dio --flash_freq 40m --flash_size 4MB \
             0x1000 .pio/build/waveshare_esp32_driver/bootloader.bin \
             0x8000 .pio/build/waveshare_esp32_driver/partitions.bin \
             0xe000 "$BOOT_APP0" \
             0x10000 .pio/build/waveshare_esp32_driver/firmware.bin
-          "$PIO_PYTHON" "$GENPART" .pio/build/waveshare_esp32_driver/partitions.bin \
+          python3 "$GENPART" .pio/build/waveshare_esp32_driver/partitions.bin \
             > dist/partitions-waveshare_esp32_driver.csv
 
           # seeed_xiao_esp32s3: ESP32-S3 (esp32s3), 8 MB flash, bootloader @ 0x0
-          "$PIO_PYTHON" "$ESPTOOL" --chip esp32s3 merge_bin \
+          esptool.py --chip esp32s3 merge_bin \
             -o dist/merged-seeed_xiao_esp32s3.bin \
             --flash_mode dio --flash_freq 80m --flash_size 8MB \
             0x0 .pio/build/seeed_xiao_esp32s3/bootloader.bin \
             0x8000 .pio/build/seeed_xiao_esp32s3/partitions.bin \
             0xe000 "$BOOT_APP0" \
             0x10000 .pio/build/seeed_xiao_esp32s3/firmware.bin
-          "$PIO_PYTHON" "$GENPART" .pio/build/seeed_xiao_esp32s3/partitions.bin \
+          python3 "$GENPART" .pio/build/seeed_xiao_esp32s3/partitions.bin \
             > dist/partitions-seeed_xiao_esp32s3.csv
 
       - name: Upload build artifact
