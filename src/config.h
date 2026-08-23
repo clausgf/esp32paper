@@ -2,9 +2,13 @@
  * esp32paper — compile-time board/panel configuration and the runtime
  * AppConfig read from the nice4iot-served config.json.
  *
- * The pin mapping matches the Waveshare "ESP32 e-Paper Driver Board"
- * (ESP32-WROOM-32). All Waveshare SPI HATs use the same header, so only
- * the GxEPD2 driver class below changes between panel sizes.
+ * Two boards are supported (see platformio.ini envs); the pin mapping below
+ * is picked at compile time from the board's Arduino core define:
+ *   - waveshare_esp32_driver: Waveshare "ESP32 e-Paper Driver Board"
+ *     (ESP32-WROOM-32). All Waveshare SPI HATs use the same header, so only
+ *     the GxEPD2 driver class changes between panel sizes.
+ *   - seeed_xiao_esp32s3: Seeed XIAO ESP32-S3 (Plus) on the EE04 ePaper
+ *     Display Board (50-pin FPC).
  */
 
 #pragma once
@@ -12,10 +16,40 @@
 #include <Arduino.h>
 
 // ***************************************************************************
-// Pin mapping — Waveshare ESP32 e-Paper Driver Board
+// Pin mapping
 // ***************************************************************************
-// (Identical to the reference epaper-esp32 firmware; do not change unless
-//  you wire a different board.)
+#if defined(ARDUINO_XIAO_ESP32S3)
+// Seeed XIAO ESP32-S3 (Plus) on the EE04 ePaper Display Board. Mapping from
+// Seeed_GFX (User_Setups/EPaper_Board_Pins_Setups.h,
+// USE_XIAO_EPAPER_DISPLAY_BOARD_EE04) / wiki.seeedstudio.com/epaper_ee04 —
+// these GPIOs are wired directly on the carrier board, not the 11-pin header.
+static const int EPD_SCK  = 7;   // D8
+static const int EPD_MISO = -1;  // unused by e-paper; EE04 leaves it open
+static const int EPD_MOSI = 9;   // D10
+static const int EPD_CS   = 44;  // D7
+static const int EPD_DC   = 10;
+static const int EPD_RST  = 38;
+static const int EPD_BUSY = 4;
+
+// EE04 gates the panel's power rail behind this pin; must be driven HIGH
+// before use (see display_renderer.cpp beginPanel_()).
+#define EPD_ENABLE_PIN 43
+
+// XIAO ESP32-S3's onboard user LED.
+static const int STATUS_LED_PIN = 21;
+
+// EE04's battery ADC (A0/GPIO1) sits behind an enable gate (A5/GPIO6) that
+// main.cpp drives HIGH at boot. Divider ratio assumed 2:1 (unconfirmed —
+// TODO: measure on real hardware and correct BATTERY_FACTOR).
+static const int BATTERY_PIN      = 1;
+#define BATTERY_ADC_ENABLE_PIN 6
+static const int BATTERY_FACTOR   = 2000; // divider ratio * 1000 (assumed 2:1 -> 2000)
+static const int BATTERY_DIVIDER  = 1000;
+static const int BATTERY_OFFSET_MV = 0;
+static const int BATTERY_MIN_MV   = 3300; // undervoltage shutdown threshold
+#else
+// Waveshare "ESP32 e-Paper Driver Board" (identical to the reference
+// epaper-esp32 firmware; do not change unless you wire a different board).
 static const int EPD_SCK  = 13;  // CLK
 static const int EPD_MISO = 16;  // unused by e-paper, kept for SPI bus init
 static const int EPD_MOSI = 14;  // DIN
@@ -35,6 +69,7 @@ static const int BATTERY_FACTOR   = 2000; // divider ratio * 1000 (2:1 -> 2000)
 static const int BATTERY_DIVIDER  = 1000;
 static const int BATTERY_OFFSET_MV = 0;
 static const int BATTERY_MIN_MV   = 3300; // undervoltage shutdown threshold
+#endif
 
 // ***************************************************************************
 // Panel support (opt-in list via build_flags in platformio.ini)

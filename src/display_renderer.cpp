@@ -263,6 +263,12 @@ void DisplayRenderer::initPanel_()
         }
     }
 
+#ifdef EPD_ENABLE_PIN
+    // EE04 gates the panel's power rail behind this pin.
+    pinMode(EPD_ENABLE_PIN, OUTPUT);
+    digitalWrite(EPD_ENABLE_PIN, HIGH);
+#endif
+
     // Configure the control pins as outputs up front. GxEPD2's init()/_reset()
     // deliberately pre-set them with digitalWrite() *before* their own pinMode()
     // ("less glitch"); arduino-esp32 3.x logs that as an "IO N is not set as

@@ -1,6 +1,7 @@
 # esp32paper
 
-Firmware for the **Waveshare ESP32 e-Paper Driver Board** that shows
+Firmware for the **Waveshare ESP32 e-Paper Driver Board** or a **Seeed XIAO
+ESP32-S3 (Plus)** on Seeed's **EE04 ePaper Display Board** that shows
 [nicepaper](https://github.com/clausgf/nicepaper)-rendered images on an e-paper
 panel. A battery-friendly, deep-sleep client of a
 [nice4iot](https://github.com/clausgf/nice4iot) server, built on
@@ -82,14 +83,30 @@ the device's `aliases.json` entry — see nicepaper's docs).
 git clone <this-repo> esp32paper
 cd esp32paper
 cp include/settings.h.example include/settings.h   # WiFi + nice4iot; see Secrets
-pio run -t upload                                   # one-time SEED flash
+pio run -e waveshare_esp32_driver -t upload         # one-time SEED flash
 pio device monitor
 ```
+
+Use `-e seeed_xiao_esp32s3` instead for a XIAO ESP32-S3 (Plus) on the EE04
+board. `pio run` with no `-e` builds **both** targets (used by CI).
 
 That first flash **seeds** the bootstrap config (WiFi, endpoint, project, token,
 TLS) into the device's NVS. Later firmware can be built **secretless** and reuses
 those NVS values — so updates (and CI) need no secrets (see
 [Firmware updates](#firmware-updates)).
+
+### Boards
+
+| env                      | board                                        | flash / PSRAM | pins |
+|---------------------------|----------------------------------------------|---------------|------|
+| `waveshare_esp32_driver`  | Waveshare ESP32 e-Paper Driver Board (ESP32-WROOM-32) | 4 MB / none | `src/config.h` (default) |
+| `seeed_xiao_esp32s3`      | Seeed XIAO ESP32-S3 (Plus) on the EE04 ePaper Display Board (50-pin FPC) | 8 MB / 8 MB | `src/config.h` (`ARDUINO_XIAO_ESP32S3`) |
+
+The EE04's ePaper power rail is gated by a pin (`EPD_ENABLE_PIN`) that
+`display_renderer.cpp` drives HIGH before panel init. Its battery ADC also
+sits behind an enable gate (`BATTERY_ADC_ENABLE_PIN`, driven HIGH at boot);
+`BATTERY_FACTOR` assumes a 2:1 divider, unconfirmed — measure on real
+hardware and correct it (`src/config.h`).
 
 ### Panels
 
@@ -153,16 +170,25 @@ Because the bootstrap config lives in NVS (which OTA does not touch), a **single
 secretless `firmware.bin` serves every device** — each reuses its own NVS seed.
 So updates carry no credentials and can be built in public CI.
 
-- **CI** (`.github/workflows/build.yml`) builds the secretless image on every
-  push and uploads it as a build artifact; a **version tag** (`git tag v1.2.3 &&
-  git push --tags`) additionally publishes a GitHub Release.
+- **CI** (`.github/workflows/build.yml`) builds the secretless image for
+  **both boards** on every push and uploads them as build artifacts; a
+  **version tag** (`git tag v1.2.3 && git push --tags`) additionally publishes
+  a GitHub Release with `firmware-waveshare_esp32_driver.bin` and
+  `firmware-seeed_xiao_esp32s3.bin`.
 - **Stable download endpoint** (public repo, no auth):
-  `https://github.com/<owner>/<repo>/releases/latest/download/firmware.bin`.
-  Point your nice4iot host at it, e.g. after a release:
-  `curl -fL <url> -o data/projects/<project>/firmware.bin` — arduino4iot then
-  pulls it per device on the next wakeup (`updateFirmware`, ETag-conditional).
+  `https://github.com/<owner>/<repo>/releases/latest/download/firmware-<env>.bin`.
+  Each device's `IOT_BOARD_ID` build define (== its PlatformIO env, e.g.
+  `waveshare_esp32_driver`) is reported as `board_id` telemetry and substituted
+  for `{board}` in arduino4iot's default `updateFirmware()` path, so devices
+  request `firmware-{board}.bin` themselves (arduino4iot >= v3.5.0) — copy the
+  release asset straight into the project, no rename needed:
+  `curl -fL <url> -o data/projects/<project>/firmware-<board>.bin` per board.
+  arduino4iot then pulls its own on the next wakeup (ETag-conditional).
   (Build **artifacts** also exist but expire and need auth — prefer releases for a
-  fixed URL.)
+  fixed URL. The release also carries `merged-<board>.bin`, a full-flash image
+  with bootloader + partition table + app for flashing a blank board, and
+  `partitions-<board>.csv`, that board's partition table in human-readable
+  form.)
 - GitHub Actions minutes are **free and unmetered for public repositories**
   (private repos on the Free plan get 2,000 min/month + 500 MB artifact storage),
   so building here has no practical per-build limit.
@@ -317,9 +343,11 @@ isn't worth it.
 ## TODO / open points
 
 - [ ] **Not yet run on hardware.** All five panels build (4.2" b/w, 7.5" b/w,
-      7.5" b/w/red, 7.3" Spectra 6, 7.3" ACeP 7-colour); SPI pins, refresh,
-      overlay placement, runtime panel switching and colour mapping (`bwr`/`e6`/
-      `c7`, paged `GxEPD2_3C`/`_7C`) need first-device verification.
+      7.5" b/w/red, 7.3" Spectra 6, 7.3" ACeP 7-colour) on both boards; SPI pins,
+      refresh, overlay placement, runtime panel switching and colour mapping
+      (`bwr`/`e6`/`c7`, paged `GxEPD2_3C`/`_7C`) need first-device verification.
+      `seeed_xiao_esp32s3`'s pin mapping (`EPD_ENABLE_PIN` power gate incl.) is
+      sourced from Seeed's docs/library, not hardware-tested here.
 - [ ] **First-boot geometry (multi-panel).** Before any `config.json`/NVS panel,
       a pre-config error screen renders on the compile-time default geometry
       (best effort) — wrong on a non-default device until config runs once.

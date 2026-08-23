@@ -316,6 +316,10 @@ void setup()
     }
     if (BATTERY_PIN >= 0)
     {
+#ifdef BATTERY_ADC_ENABLE_PIN
+        pinMode(BATTERY_ADC_ENABLE_PIN, OUTPUT);
+        digitalWrite(BATTERY_ADC_ENABLE_PIN, HIGH);
+#endif
         iot.setBattery(BATTERY_PIN, BATTERY_FACTOR, BATTERY_DIVIDER, BATTERY_OFFSET_MV);
         iot.setBatteryMin_mV(BATTERY_MIN_MV);
     }
