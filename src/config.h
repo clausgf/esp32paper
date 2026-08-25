@@ -80,17 +80,17 @@ static const int BATTERY_MIN_MV   = 3300; // undervoltage shutdown threshold
 // flash but no RAM. See src/panels.h for the registry / colour models.
 //
 //   flag                   id "panel"         panel                        color_model
-//   EPAPER_PANEL_42_BW     gxepd2_420         4.2"  400x300 b/w            bw
-//   EPAPER_PANEL_42_BWR    gxepd2_420c_z15    4.2"  400x300 b/w/red        bwr
-//   EPAPER_PANEL_75_BW     gxepd2_750_t7      7.5"  800x480 b/w            bw
-//   EPAPER_PANEL_75_BWR    gxepd2_750c_z90    7.5"  800x480 b/w/red        bwr
-//   EPAPER_PANEL_73_E6     gxepd2_073e01      7.3"  800x480 Spectra 6      e6
-//   EPAPER_PANEL_73_7C     gxepd2_acep_730    7.3"  800x480 ACeP 7-colour  c7
-#if !defined(EPAPER_PANEL_42_BW) && !defined(EPAPER_PANEL_42_BWR) && \
-    !defined(EPAPER_PANEL_75_BW) && \
-    !defined(EPAPER_PANEL_75_BWR) && !defined(EPAPER_PANEL_73_E6) && \
-    !defined(EPAPER_PANEL_73_7C)
-#define EPAPER_PANEL_42_BW 1
+//   EPAPER_PANEL_BW_420     gxepd2_420         4.2"  400x300 b/w            bw
+//   EPAPER_PANEL_BWR_420C    gxepd2_420c_z15    4.2"  400x300 b/w/red        bwr
+//   EPAPER_PANEL_BW_750_T7     gxepd2_750_t7      7.5"  800x480 b/w            bw
+//   EPAPER_PANEL_BWR_750_Z90    gxepd2_750c_z90    7.5"  800x480 b/w/red        bwr
+//   EPAPER_PANEL_E6_730C_GDEP073E01     gxepd2_073e01      7.3"  800x480 Spectra 6      e6
+//   EPAPER_PANEL_7C_730C_ACEP_730     gxepd2_acep_730    7.3"  800x480 ACeP 7-colour  c7
+#if !defined(EPAPER_PANEL_BW_420) && !defined(EPAPER_PANEL_BWR_420C) && \
+    !defined(EPAPER_PANEL_BW_750_T7) && \
+    !defined(EPAPER_PANEL_BWR_750_Z90) && !defined(EPAPER_PANEL_E6_730C_GDEP073E01) && \
+    !defined(EPAPER_PANEL_7C_730C_ACEP_730)
+#define EPAPER_PANEL_BW_420 1
 #endif
 
 // Panel id used before config.json is available (first boot, pre-config error

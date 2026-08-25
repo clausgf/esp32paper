@@ -118,11 +118,11 @@ The `color_model` sent to nicepaper is derived from the panel.
 
 | build flag             | panel id          | panel                        | GxEPD2 driver             | color_model |
 |------------------------|-------------------|------------------------------|---------------------------|-------------|
-| `EPAPER_PANEL_42_BW`   | `gxepd2_420`      | 4.2" 400×300 b/w             | `GxEPD2_420`              | `bw`        |
-| `EPAPER_PANEL_75_BW`   | `gxepd2_750_t7`   | 7.5" 800×480 b/w             | `GxEPD2_750_T7`           | `bw`        |
-| `EPAPER_PANEL_75_BWR`  | `gxepd2_750c_z90` | 7.5" 800×480 b/w/red         | `GxEPD2_750c_Z90`         | `bwr`       |
-| `EPAPER_PANEL_73_E6`   | `gxepd2_073e01`   | 7.3" 800×480 Spectra 6 (E6)  | `GxEPD2_730c_GDEP073E01`  | `e6`        |
-| `EPAPER_PANEL_73_7C`   | `gxepd2_acep_730` | 7.3" 800×480 ACeP 7-colour   | `GxEPD2_730c_ACeP_730`    | `c7`        |
+| `EPAPER_PANEL_BW_420`   | `gxepd2_420`      | 4.2" 400×300 b/w             | `GxEPD2_420`              | `bw`        |
+| `EPAPER_PANEL_BW_750_T7`   | `gxepd2_750_t7`   | 7.5" 800×480 b/w             | `GxEPD2_750_T7`           | `bw`        |
+| `EPAPER_PANEL_BWR_750_Z90`  | `gxepd2_750c_z90` | 7.5" 800×480 b/w/red         | `GxEPD2_750c_Z90`         | `bwr`       |
+| `EPAPER_PANEL_E6_730C_GDEP073E01`   | `gxepd2_073e01`   | 7.3" 800×480 Spectra 6 (E6)  | `GxEPD2_730c_GDEP073E01`  | `e6`        |
+| `EPAPER_PANEL_7C_730C_ACEP_730`   | `gxepd2_acep_730` | 7.3" 800×480 ACeP 7-colour   | `GxEPD2_730c_ACeP_730`    | `c7`        |
 
 Set the panel per device in nice4iot's `config.json` (`"panel": "gxepd2_073e01"`);
 it is persisted in NVS so later boots (and pre-config error screens) use the

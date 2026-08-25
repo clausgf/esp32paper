@@ -81,44 +81,38 @@ static constexpr uint16_t epdPageRows(int rowBytes, int height)
 
 // --- opt-in rows: X(id, GfxTemplate, DriverClass, rowDivisor, colorModel, ColorMode)
 //     rowDivisor = WIDTH bytes/row: 8 (b/w, 1bpp), 4 (b/w/red, 2 planes), 2 (7C, 4bpp)
-#ifdef EPAPER_PANEL_42_BW
-#  define EPD_ROW_42_BW(X) X("gxepd2_420", GxEPD2_BW, GxEPD2_420, 8, "bw", ColorMode::BW)
+#ifdef EPAPER_PANEL_BW_420
+#  define EPD_ROW_BW_420(X) X("gxepd2_420", GxEPD2_BW, GxEPD2_420, 8, "bw", ColorMode::BW)
 #else
-#  define EPD_ROW_42_BW(X)
+#  define EPD_ROW_BW_420(X)
 #endif
-#ifdef EPAPER_PANEL_42_BWR
-#  define EPD_ROW_42_BWR(X) X("gxepd2_420c_z15", GxEPD2_3C, GxEPD2_420c, 4, "bwr", ColorMode::BWR)
+#ifdef EPAPER_PANEL_BW_750_T7
+#  define EPD_ROW_BW_750_T7(X) X("gxepd2_750_t7", GxEPD2_BW, GxEPD2_750_T7, 8, "bw", ColorMode::BW)
 #else
-#  define EPD_ROW_42_BWR(X)
+#  define EPD_ROW_BW_750_T7(X)
 #endif
-#ifdef EPAPER_PANEL_75_BW
-#  define EPD_ROW_75_BW(X) X("gxepd2_750_t7", GxEPD2_BW, GxEPD2_750_T7, 8, "bw", ColorMode::BW)
+#ifdef EPAPER_PANEL_BWR_750_Z90
+#  define EPD_ROW_BWR_750_Z90(X) X("gxepd2_750c_z90", GxEPD2_3C, GxEPD2_750c_Z90, 4, "bwr", ColorMode::BWR)
 #else
-#  define EPD_ROW_75_BW(X)
+#  define EPD_ROW_BWR_750_Z90(X)
 #endif
-#ifdef EPAPER_PANEL_75_BWR
-#  define EPD_ROW_75_BWR(X) X("gxepd2_750c_z90", GxEPD2_3C, GxEPD2_750c_Z90, 4, "bwr", ColorMode::BWR)
+#ifdef EPAPER_PANEL_E6_730C_GDEP073E01
+#  define EPD_ROW_E6_730C_GDEP073E01(X) X("gxepd2_073e01", GxEPD2_7C, GxEPD2_730c_GDEP073E01, 2, "e6", ColorMode::E6)
 #else
-#  define EPD_ROW_75_BWR(X)
+#  define EPD_ROW_E6_730C_GDEP073E01(X)
 #endif
-#ifdef EPAPER_PANEL_73_E6
-#  define EPD_ROW_73_E6(X) X("gxepd2_073e01", GxEPD2_7C, GxEPD2_730c_GDEP073E01, 2, "e6", ColorMode::E6)
+#ifdef EPAPER_PANEL_7C_730C_ACEP_730
+#  define EPD_ROW_7C_730C_ACEP_730(X) X("gxepd2_acep_730", GxEPD2_7C, GxEPD2_730c_ACeP_730, 2, "c7", ColorMode::C7)
 #else
-#  define EPD_ROW_73_E6(X)
-#endif
-#ifdef EPAPER_PANEL_73_7C
-#  define EPD_ROW_73_7C(X) X("gxepd2_acep_730", GxEPD2_7C, GxEPD2_730c_ACeP_730, 2, "c7", ColorMode::C7)
-#else
-#  define EPD_ROW_73_7C(X)
+#  define EPD_ROW_7C_730C_ACEP_730(X)
 #endif
 
 #define EPAPER_FOR_EACH_PANEL(X) \
-    EPD_ROW_42_BW(X)  \
-    EPD_ROW_42_BWR(X) \
-    EPD_ROW_75_BW(X)  \
-    EPD_ROW_75_BWR(X) \
-    EPD_ROW_73_E6(X)  \
-    EPD_ROW_73_7C(X)
+    EPD_ROW_BW_420(X)  \
+    EPD_ROW_BW_750_T7(X)  \
+    EPD_ROW_BWR_750_Z90(X) \
+    EPD_ROW_E6_730C_GDEP073E01(X)  \
+    EPD_ROW_7C_730C_ACEP_730(X)
 
 // --- registry metadata + factory -------------------------------------------
 struct PanelInfo
