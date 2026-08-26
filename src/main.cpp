@@ -265,9 +265,7 @@ void setup()
     Serial.begin(115200);
 
     // Register the app config keys with arduino4iot's IotConfig, else
-    // updateConfig() ignores them (only registered keys are stored in NVRAM) and
-    // getConfig*() would always return the default. Types must match the JSON;
-    // `static` so each registration (a pointer to the value) outlives setup().
+    // updateConfig() ignores them (only registered keys are stored in NVRAM).
     // log_level and sleep_s are registered by the library itself.
     {
         const AppConfig d;
@@ -281,11 +279,7 @@ void setup()
     }
 
     // --- seed the deployment bootstrap config into NVS (once) ---
-    // On a build carrying the -D defines / settings.h this writes WiFi, endpoint,
-    // project, token and TLS trust to NVS (seed-if-absent; bump IOT_SEED_GENERATION
-    // to force-update changed values). A secretless build passes empty values — a
-    // no-op that reuses the NVS already on the device — so OTA images carry no
-    // secrets. iot.begin() / api.begin() below read this config back from NVS.
+    // From build -D defines / settings.h - empty values for seecretless build.
     {
         IotSeedConfig seed;
         seed.wifiSsid          = IOT_WIFI_SSID;
@@ -307,8 +301,6 @@ void setup()
     }
 
     // --- battery + status LED (must be set before iot.begin()) ---
-    // Guards are runtime `if`s because the pins are const ints, not macros;
-    // the compiler folds them away for the compile-time constant.
     if (STATUS_LED_PIN >= 0)
     {
         iot.setLedPin(STATUS_LED_PIN);
@@ -380,22 +372,17 @@ void setup()
                        ".\n\nCheck the token and device approval.", retry_s);
     }
 
-    // --- config: use the NVS-cached config from the previous cycle for this
-    //     fetch and refresh config.json in the background (housekeeping) for the
-    //     NEXT cycle, keeping its HTTP round-trip off the pre-refresh critical
-    //     path. Provisioning above is usually a no-op (token still valid) and
-    //     costs no round-trip; firmware update + telemetry are likewise deferred
-    //     into the housekeeping so they overlap the slow refresh.
-    //     Exception: the very first cycle (no cached config yet) fetches config
-    //     synchronously so the first render already uses the configured panel.
+    // --- config: If NVS-cached config from the previous cycle available, 
+    //     use it for this cycle and refresh config.json 
+    //     in the background (housekeeping) for the NEXT cycle
     bool haveCachedConfig = nvsConfigSeen();
     if (!haveCachedConfig && config.updateConfig().isOkOrNotModified())
         nvsSetConfigSeen(); // bootstrapped; next cycle uses the cache + bg refresh
     AppConfig cfg = loadAppConfig();
     retry_s = cfg.errorRetry_s;
-    logger.info(LOG_TAG, "heap: %u free / %u total, PSRAM %u B",
-                (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getHeapSize(),
-                (unsigned)ESP.getPsramSize());
+    logger.verbose(LOG_TAG, "heap: %u free / %u total, PSRAM %u B",
+                    (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getHeapSize(),
+                    (unsigned)ESP.getPsramSize());
     displayRenderer.setRotation(cfg.rotation);
     if (cfg.panel.length())
     {

@@ -523,5 +523,5 @@ void DisplayRenderer::showError(ErrorIcon icon, const String &title,
 
         drawOverlay_(status);
     } while (gx->nextPage());
-    gx->hibernate();
+    //gx->hibernate();
 }

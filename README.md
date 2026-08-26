@@ -123,6 +123,7 @@ The `color_model` sent to nicepaper is derived from the panel.
 | `EPAPER_PANEL_BWR_750_Z90`  | `gxepd2_750c_z90` | 7.5" 800×480 b/w/red         | `GxEPD2_750c_Z90`         | `bwr`       |
 | `EPAPER_PANEL_E6_730C_GDEP073E01`   | `gxepd2_073e01`   | 7.3" 800×480 Spectra 6 (E6)  | `GxEPD2_730c_GDEP073E01`  | `e6`        |
 | `EPAPER_PANEL_7C_730C_ACEP_730`   | `gxepd2_acep_730` | 7.3" 800×480 ACeP 7-colour   | `GxEPD2_730c_ACeP_730`    | `c7`        |
+| `EPAPER_PANEL_7C_730C_GDEY073D46` | `gxepd2_073d46`   | 7.3" 800×480 ACeP 7-colour   | `GxEPD2_730c_GDEY073D46`  | `c7`        |
 
 Set the panel per device in nice4iot's `config.json` (`"panel": "gxepd2_073e01"`);
 it is persisted in NVS so later boots (and pre-config error screens) use the

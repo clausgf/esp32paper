@@ -25,6 +25,7 @@
 #include <epd3c/GxEPD2_750c_Z90.h>
 #include <epd7c/GxEPD2_730c_GDEP073E01.h>
 #include <epd7c/GxEPD2_730c_ACeP_730.h>
+#include <epd7c/GxEPD2_730c_GDEY073D46.h>
 
 // Colour handling per panel (drives colorForPixel() in display_renderer.cpp).
 enum class ColorMode : uint8_t { BW, BWR, E6, C7 };
@@ -106,13 +107,19 @@ static constexpr uint16_t epdPageRows(int rowBytes, int height)
 #else
 #  define EPD_ROW_7C_730C_ACEP_730(X)
 #endif
+#ifdef EPAPER_PANEL_7C_730C_GDEY073D46
+#  define EPD_ROW_7C_730C_GDEY073D46(X) X("gxepd2_073d46", GxEPD2_7C, GxEPD2_730c_GDEY073D46, 2, "c7", ColorMode::C7)
+#else
+#  define EPD_ROW_7C_730C_GDEY073D46(X)
+#endif
 
 #define EPAPER_FOR_EACH_PANEL(X) \
     EPD_ROW_BW_420(X)  \
     EPD_ROW_BW_750_T7(X)  \
     EPD_ROW_BWR_750_Z90(X) \
     EPD_ROW_E6_730C_GDEP073E01(X)  \
-    EPD_ROW_7C_730C_ACEP_730(X)
+    EPD_ROW_7C_730C_ACEP_730(X) \
+    EPD_ROW_7C_730C_GDEY073D46(X)
 
 // --- registry metadata + factory -------------------------------------------
 struct PanelInfo
