@@ -27,6 +27,7 @@
 
 #include "config.h"
 #include "display_renderer.h"
+#include "panels.h"
 
 // Deployment bootstrap values (WiFi, endpoint, project, provisioning token, TLS
 // trust) are seeded into NVS on first boot. A build WITH these -D defines /
@@ -127,14 +128,97 @@ static DisplayStatus buildStatus()
 static AppConfig loadAppConfig()
 {
     AppConfig cfg;
-    cfg.imagePath    = config.getConfigString("image_path", cfg.imagePath);
     cfg.panel        = config.getConfigString("panel", cfg.panel);
+    cfg.imagePath    = config.getConfigString("image_path", cfg.imagePath);
     cfg.minSleep_s   = config.getConfigInt32("min_sleep_s", cfg.minSleep_s);
     cfg.maxSleep_s   = config.getConfigInt32("max_sleep_s", cfg.maxSleep_s);
     cfg.errorRetry_s = config.getConfigInt32("error_retry_s", cfg.errorRetry_s);
-    cfg.rotation     = config.getConfigInt32("rotation", cfg.rotation);
+    const String rotation = config.getConfigString("rotation", "0deg");
+    if (rotation == "90deg" || rotation == "90" || rotation == "1")
+        cfg.rotation = Rotation::Deg90;
+    else if (rotation == "180deg" || rotation == "180" || rotation == "2")
+        cfg.rotation = Rotation::Deg180;
+    else if (rotation == "270deg" || rotation == "270" || rotation == "3")
+        cfg.rotation = Rotation::Deg270;
+    else if (rotation != "0deg" && rotation != "0")
+        logger.warn(LOG_TAG, "invalid rotation '%s', using 0deg", rotation.c_str());
     cfg.fwCheck_s    = config.getConfigInt32("fw_check_s", cfg.fwCheck_s);
     return cfg;
+}
+
+static void registerAppConfig()
+{
+    const AppConfig d;
+    static IotConfigValue<String>  cvPanel(config, d.panel, "panel");
+    static IotConfigValue<String>  cvRotation(config, "0deg", "rotation");
+    static IotConfigValue<String>  cvImagePath(config, d.imagePath, "image_path");
+    static IotConfigValue<int32_t> cvMinSleep(config, d.minSleep_s, "min_sleep_s");
+    static IotConfigValue<int32_t> cvMaxSleep(config, d.maxSleep_s, "max_sleep_s");
+    static IotConfigValue<int32_t> cvErrorRetry(config, d.errorRetry_s, "error_retry_s");
+    static IotConfigValue<int32_t> cvFwCheck(config, d.fwCheck_s, "fw_check_s");
+}
+
+static String buildConfigSchema()
+{
+    String schema = R"json({
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "title": "esp32paper runtime configuration",
+    "type": "object",
+    "additionalProperties": false,
+
+    "x-ui": {
+        "layout": [
+            ["panel", "rotation"],
+            ["image_path"],
+            ["min_sleep_s", "max_sleep_s"],
+            ["error_retry_s", "fw_check_s"]
+        ]
+    },
+
+    "properties": {
+        "panel": {
+            "type": "string",
+            "description": "Id of the active panel. Only panels compiled into the firmware are valid at runtime.",
+            "enum": []
+        },
+        "rotation": {
+            "type": "string",
+            "description": "GxEPD2 display rotation.",
+            "enum": ["0deg", "90deg", "180deg", "270deg"]
+        },
+        "image_path": {
+            "type": "string",
+            "description": "API path template for the rendered image ({project}/{device} are auto-expanded).",
+            "default": "ext/epaper/{project}/screens/{device}/image.png"
+        },
+        "min_sleep_s": {
+            "type": "integer",
+            "description": "Lower clamp for the Cache-Control max-age derived sleep (seconds).",
+            "minimum": 1,
+            "default": 300
+        },
+        "max_sleep_s": {
+            "type": "integer",
+            "description": "Upper clamp for the Cache-Control max-age derived sleep (seconds).",
+            "minimum": 1,
+            "default": 3600
+        },
+        "error_retry_s": {
+            "type": "integer",
+            "description": "Deep-sleep interval in seconds after a full-screen error page.",
+            "minimum": 1,
+            "default": 900
+        },
+        "fw_check_s": {
+            "type": "integer",
+            "description": "Minimum time between two checks for firmware updates in seconds.",
+            "minimum": 0
+        }
+    }
+})json";
+    const String enumValues = epdSupportedPanelsJsonEnum();
+    schema.replace("\"enum\": []", String("\"enum\": [") + enumValues + "]");
+    return schema;
 }
 
 // Panel id persisted in NVS (namespace "epaper") so pre-config error screens use
@@ -175,6 +259,49 @@ static void nvsSetConfigSeen()
     p.begin("epaper", false);
     if (!p.getBool("cfg_seen", false)) p.putBool("cfg_seen", true);
     p.end();
+}
+
+static String nvsGetSchemaFirmwareVersion()
+{
+    Preferences p;
+    p.begin("epaper", /*readonly*/ true);
+    String version = p.getString("schema_fw", "");
+    p.end();
+    return version;
+}
+
+static void nvsSetSchemaFirmwareVersion(const String &version)
+{
+    Preferences p;
+    p.begin("epaper", false);
+    p.putString("schema_fw", version);
+    p.end();
+}
+
+static void uploadConfigSchemaIfNeeded()
+{
+    const String firmwareVersion = iot.getFirmwareVersion();
+    if (firmwareVersion.isEmpty())
+    {
+        logger.warn(LOG_TAG, "firmware version unavailable; skipping config schema upload");
+        return;
+    }
+    if (nvsGetSchemaFirmwareVersion() == firmwareVersion)
+        return;
+
+    IotResult result = api.uploadFile("config.schema.json", buildConfigSchema(),
+                                     "application/schema+json");
+    if (result)
+    {
+        nvsSetSchemaFirmwareVersion(firmwareVersion);
+        logger.info(LOG_TAG, "uploaded config.schema.json for firmware %s",
+                    firmwareVersion.c_str());
+    }
+    else
+    {
+        logger.warn(LOG_TAG, "config schema upload failed for firmware %s (status %d)",
+                    firmwareVersion.c_str(), result.httpStatus);
+    }
 }
 
 static int parseMaxAge(const String &cacheControl)
@@ -264,19 +391,10 @@ void setup()
     unsigned long tBoot = millis();
     Serial.begin(115200);
 
-    // Register the app config keys with arduino4iot's IotConfig, else
-    // updateConfig() ignores them (only registered keys are stored in NVRAM).
-    // log_level and sleep_s are registered by the library itself.
-    {
-        const AppConfig d;
-        static IotConfigValue<String>  cvPanel(config, d.panel, "panel");
-        static IotConfigValue<String>  cvImagePath(config, d.imagePath, "image_path");
-        static IotConfigValue<int32_t> cvRotation(config, d.rotation, "rotation");
-        static IotConfigValue<int32_t> cvMinSleep(config, d.minSleep_s, "min_sleep_s");
-        static IotConfigValue<int32_t> cvMaxSleep(config, d.maxSleep_s, "max_sleep_s");
-        static IotConfigValue<int32_t> cvErrorRetry(config, d.errorRetry_s, "error_retry_s");
-        static IotConfigValue<int32_t> cvFwCheck(config, d.fwCheck_s, "fw_check_s");
-    }
+    // Register the app config keys with arduino4iot, else updateConfig() ignores
+    // them (only registered keys are stored in NVRAM). log_level and sleep_s
+    // are registered by the library itself.
+    registerAppConfig();
 
     // --- seed the deployment bootstrap config into NVS (once) ---
     // From build -D defines / settings.h - empty values for seecretless build.
@@ -383,7 +501,7 @@ void setup()
     logger.verbose(LOG_TAG, "heap: %u free / %u total, PSRAM %u B",
                     (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getHeapSize(),
                     (unsigned)ESP.getPsramSize());
-    displayRenderer.setRotation(cfg.rotation);
+    displayRenderer.setRotation(static_cast<int>(cfg.rotation));
     if (cfg.panel.length())
     {
         displayRenderer.setPanel(cfg.panel);
@@ -428,6 +546,7 @@ void setup()
     auto housekeeping = [&]()
     {
         iot.resetWatchdog();
+        uploadConfigSchemaIfNeeded();
         // OTA check, throttled to fw_check_s (a real update reboots): the display
         // changes far more often than the firmware. time() is valid here (NTP
         // synced in iot.begin); rtc_lastFwCheckEpoch==0 forces a check on cold boot.
@@ -481,11 +600,8 @@ void setup()
 
     if (img.status == 304)
     {
-        // Nothing to refresh -> no slow phase to hide the network housekeeping
-        // behind, so skip it (OTA check, telemetry, log flush) to keep the
-        // radio-on window minimal. Just count this silent wake so the next
-        // telemetry POST (on a cycle that does refresh) reports it; config/OTA
-        // catch up then.
+        // Nothing to refresh. Housekeeping still runs once so a new firmware
+        // version can publish its schema even when the image is unchanged.
         logger.info(LOG_TAG, "image unchanged (304), keeping current frame");
         if (rtc_tel.magic != RTC_TEL_MAGIC) // nothing buffered yet -> init
         {
@@ -494,7 +610,7 @@ void setup()
             rtc_tel.deferred_cycles = 0;
         }
         rtc_tel.deferred_cycles += 1; // keep prior last_* intact; just count
-        radioOff();
+        housekeeping();
     }
     else if (img.status == 200 && img.body.length() > 0)
     {

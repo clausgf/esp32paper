@@ -207,7 +207,7 @@ Served by nice4iot at `file/{project}/{device}/config.json`; all keys optional:
 | `min_sleep_s`  | int    | `300`                                             | lower clamp on `max-age` sleep |
 | `max_sleep_s`  | int    | `86400`                                           | upper clamp on `max-age` sleep |
 | `error_retry_s`| int    | `900`                                             | sleep after an error screen |
-| `rotation`     | int    | `0`                                               | GxEPD2 rotation 0..3 |
+| `rotation`     | string | `0deg`                                            | GxEPD2 rotation: `0deg`, `90deg`, `180deg`, `270deg` |
 | `fw_check_s`   | int    | `86400`                                           | min seconds between OTA checks (`0` = every wake) |
 
 Changing a key takes effect on the *next* cycle (config is refreshed in the

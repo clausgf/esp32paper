@@ -176,3 +176,18 @@ static String epdSupportedPanelsCsv()
     }
     return s;
 }
+
+// JSON string values for the compiled-in panel ids, without surrounding array
+// brackets. Panel ids are registry constants and need no additional escaping.
+static String epdSupportedPanelsJsonEnum()
+{
+    String s;
+    for (size_t i = 0; i < EPAPER_PANEL_COUNT; i++)
+    {
+        if (i) s += ", ";
+        s += "\"";
+        s += EPAPER_PANELS[i].id;
+        s += "\"";
+    }
+    return s;
+}

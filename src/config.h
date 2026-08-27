@@ -122,9 +122,17 @@ static const int BATTERY_MIN_MV   = 3300; // undervoltage shutdown threshold
 //   "min_sleep_s"   int    lower clamp for the Cache-Control derived sleep
 //   "max_sleep_s"   int    upper clamp for the Cache-Control derived sleep
 //   "error_retry_s" int    deep-sleep interval after an error screen
-//   "rotation"      int    GxEPD2 rotation 0..3
+//   "rotation"      string GxEPD2 rotation: 0deg, 90deg, 180deg or 270deg
 //   "fw_check_s"    int    min seconds between OTA firmware checks (0 = every wake)
 //
+enum class Rotation : int
+{
+    Deg0 = 0,
+    Deg90 = 1,
+    Deg180 = 2,
+    Deg270 = 3,
+};
+
 struct AppConfig
 {
     // API path to the nicepaper image. {project} and {device} are expanded by
@@ -134,6 +142,6 @@ struct AppConfig
     int    minSleep_s   = 300;        //  5 min
     int    maxSleep_s   = 24 * 3600;  // 24 h
     int    errorRetry_s = 900;        // 15 min retry after a failure/error screen
-    int    rotation     = 0;
+    Rotation rotation   = Rotation::Deg0;
     int    fwCheck_s    = 24 * 3600;  // min interval between OTA firmware checks
 };
