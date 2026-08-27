@@ -118,17 +118,17 @@ The `color_model` sent to nicepaper is derived from the panel.
 
 | build flag             | panel id          | panel                        | GxEPD2 driver             | color_model |
 |------------------------|-------------------|------------------------------|---------------------------|-------------|
-| `EPAPER_PANEL_BW_420`   | `gxepd2_420`      | 4.2" 400×300 b/w             | `GxEPD2_420`              | `bw`        |
-| `EPAPER_PANEL_BW_750_T7`   | `gxepd2_750_t7`   | 7.5" 800×480 b/w             | `GxEPD2_750_T7`           | `bw`        |
-| `EPAPER_PANEL_BWR_750_Z90`  | `gxepd2_750c_z90` | 7.5" 800×480 b/w/red         | `GxEPD2_750c_Z90`         | `bwr`       |
-| `EPAPER_PANEL_E6_730C_GDEP073E01`   | `gxepd2_073e01`   | 7.3" 800×480 Spectra 6 (E6)  | `GxEPD2_730c_GDEP073E01`  | `e6`        |
-| `EPAPER_PANEL_7C_730C_ACEP_730`   | `gxepd2_acep_730` | 7.3" 800×480 ACeP 7-colour   | `GxEPD2_730c_ACeP_730`    | `c7`        |
-| `EPAPER_PANEL_7C_730C_GDEY073D46` | `gxepd2_073d46`   | 7.3" 800×480 ACeP 7-colour   | `GxEPD2_730c_GDEY073D46`  | `c7`        |
+| `PANEL_GDEW042T2`   | `GDEW042T2`      | 4.2" 400×300 b/w             | `GxEPD2_420`              | `bw`        |
+| `PANEL_GDEW075T7`   | `GDEW075T7`   | 7.5" 800×480 b/w             | `GxEPD2_750_T7`           | `bw`        |
+| `PANEL_GDEH075Z90`  | `GDEH075Z90` | 7.5" 800×480 b/w/red         | `GxEPD2_750c_Z90`         | `bwr`       |
+| `PANEL_GDEP073E01`   | `GDEP073E01`   | 7.3" 800×480 Spectra 6 (E6)  | `GxEPD2_730c_GDEP073E01`  | `e6`        |
+| `PANEL_ACEP730`   | `ACeP730` | 7.3" 800×480 ACeP 7-colour   | `GxEPD2_730c_ACeP_730`    | `c7`        |
+| `PANEL_GDEY073D46` | `GDEY073D46`   | 7.3" 800×480 ACeP 7-colour   | `GxEPD2_730c_GDEY073D46`  | `c7`        |
 
-Set the panel per device in nice4iot's `config.json` (`"panel": "gxepd2_073e01"`);
+Set the panel per device in nice4iot's `config.json` (`"panel": "GDEP073E01"`);
 it is persisted in NVS so later boots (and pre-config error screens) use the
 right geometry. `EPAPER_DEFAULT_PANEL` sets the first-boot default (else the
-first enabled panel); this build ships it as `gxepd2_750_t7` (7.5" 800×480 b/w,
+first enabled panel); this build ships it as `GDEW075T7` (7.5" 800×480 b/w,
 e.g. the Seeed panel). Pins are identical for all Waveshare HATs (`src/config.h`).
 Requires `-DENABLE_GxEPD2_GFX=1` so the drivers share a common base (see
 `src/panels.h`). Spectra 6 renders 6 colours, ACeP 7 (incl. orange); their 192 KB
@@ -317,7 +317,7 @@ so **only its buffer** uses RAM. Firmware size (this build, all five panels,
   `decode_transfer_ms`/`cycle_ms` complete only after the refresh, so they ship
   next cycle as `last_*` instead of keeping WiFi on; the refresh start is
   timestamped from GxEPD2's first busy-callback.
-- **Opt-in panel list** (`EPAPER_PANEL_*`), **pioarduino platform**
+- **Opt-in panel list** (`PANEL_*`), **pioarduino platform**
   (arduino4iot needs arduino-esp32 3.x), **deep-sleep-first** (`loop()` unused;
   battery undervoltage → `iot.panic()`).
 - **Secrets seeded into NVS, not baked into every build** — one secretless image
