@@ -186,10 +186,7 @@ So updates carry no credentials and can be built in public CI.
   `curl -fL <url> -o data/projects/<project>/firmware-<board>.bin` per board.
   arduino4iot then pulls its own on the next wakeup (ETag-conditional).
   (Build **artifacts** also exist but expire and need auth — prefer releases for a
-  fixed URL. The release also carries `merged-<board>.bin`, a full-flash image
-  with bootloader + partition table + app for flashing a blank board, and
-  `partitions-<board>.csv`, that board's partition table in human-readable
-  form.)
+  fixed URL.)
 - GitHub Actions minutes are **free and unmetered for public repositories**
   (private repos on the Free plan get 2,000 min/month + 500 MB artifact storage),
   so building here has no practical per-build limit.
