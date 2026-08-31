@@ -576,7 +576,7 @@ void setup()
         t.add("heap_free", (int)ESP.getFreeHeap());
         t.add("sleep_s", sleep_s > 0 ? sleep_s : iot.getLastSleepDuration_s());
         t.add("panel", displayRenderer.activePanel());        // active panel id
-        t.add("panels", displayRenderer.supportedPanels());   // compiled-in panels
+        t.add("supported_panels", displayRenderer.supportedPanels());   // compiled-in panels
         // Previous cycle's end-of-cycle phases, buffered in RTC RAM (see below),
         // plus any silent 304 wakes skipped since the last POST.
         if (rtc_tel.magic == RTC_TEL_MAGIC)

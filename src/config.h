@@ -143,5 +143,5 @@ struct AppConfig
     int    maxSleep_s   = 24 * 3600;  // 24 h
     int    errorRetry_s = 900;        // 15 min retry after a failure/error screen
     Rotation rotation   = Rotation::Deg0;
-    int    fwCheck_s    = 24 * 3600;  // min interval between OTA firmware checks
+    int    fwCheck_s    = 1 * 3600;  // min interval between OTA firmware checks
 };
