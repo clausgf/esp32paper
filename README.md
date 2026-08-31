@@ -118,9 +118,8 @@ The `color_model` sent to nicepaper is derived from the panel.
 
 | build flag             | panel id          | panel                        | GxEPD2 driver             | color_model |
 |------------------------|-------------------|------------------------------|---------------------------|-------------|
-| `PANEL_GDEW042T2`   | `GDEW042T2`      | 4.2" 400×300 b/w             | `GxEPD2_420`              | `bw`        |
 | `PANEL_GDEW075T7`   | `GDEW075T7`   | 7.5" 800×480 b/w             | `GxEPD2_750_T7`           | `bw`        |
-| `PANEL_GDEH075Z90`  | `GDEH075Z90` | 7.5" 800×480 b/w/red         | `GxEPD2_750c_Z90`         | `bwr`       |
+| `PANEL_GDEY075Z08`  | `GDEY075Z08` | 7.5" 800×480 b/w/red         | `GxEPD2_750c_GDEY075Z08`  | `bwr`       |
 | `PANEL_GDEP073E01`   | `GDEP073E01`   | 7.3" 800×480 Spectra 6 (E6)  | `GxEPD2_730c_GDEP073E01`  | `e6`        |
 | `PANEL_ACEP730`   | `ACeP730` | 7.3" 800×480 ACeP 7-colour   | `GxEPD2_730c_ACeP_730`    | `c7`        |
 | `PANEL_GDEY073D46` | `GDEY073D46`   | 7.3" 800×480 ACeP 7-colour   | `GxEPD2_730c_GDEY073D46`  | `c7`        |

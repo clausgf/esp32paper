@@ -19,10 +19,8 @@
 #include <GxEPD2_BW.h>
 #include <GxEPD2_3C.h>
 #include <GxEPD2_7C.h>
-#include <epd/GxEPD2_420.h>
 #include <epd/GxEPD2_750_T7.h>
-#include <epd3c/GxEPD2_420c.h>
-#include <epd3c/GxEPD2_750c_Z90.h>
+#include <gdey3c/GxEPD2_750c_GDEY075Z08.h>
 #include <epd7c/GxEPD2_730c_GDEP073E01.h>
 #include <epd7c/GxEPD2_730c_ACeP_730.h>
 #include <epd7c/GxEPD2_730c_GDEY073D46.h>
@@ -82,20 +80,15 @@ static constexpr uint16_t epdPageRows(int rowBytes, int height)
 
 // --- opt-in rows: X(id, GfxTemplate, DriverClass, rowDivisor, colorModel, ColorMode)
 //     rowDivisor = WIDTH bytes/row: 8 (b/w, 1bpp), 4 (b/w/red, 2 planes), 2 (7C, 4bpp)
-#ifdef PANEL_GDEW042T2
-#  define EPW_ROW_GDEW042T2(X) X("GDEW042T2", GxEPD2_BW, GxEPD2_420, 8, "bw", ColorMode::BW)
-#else
-#  define EPW_ROW_GDEW042T2(X)
-#endif
 #ifdef PANEL_GDEW075T7
 #  define EPW_ROW_GDEW075T7(X) X("GDEW075T7", GxEPD2_BW, GxEPD2_750_T7, 8, "bw", ColorMode::BW)
 #else
 #  define EPW_ROW_GDEW075T7(X)
 #endif
-#ifdef PANEL_GDEH075Z90
-#  define EPW_ROW_GDEH075Z90(X) X("GDEH075Z90", GxEPD2_3C, GxEPD2_750c_Z90, 4, "bwr", ColorMode::BWR)
+#ifdef PANEL_GDEY075Z08
+#  define EPW_ROW_GDEY075Z08(X) X("GDEY075Z08", GxEPD2_3C, GxEPD2_750c_GDEY075Z08, 4, "bwr", ColorMode::BWR)
 #else
-#  define EPW_ROW_GDEH075Z90(X)
+#  define EPW_ROW_GDEY075Z08(X)
 #endif
 #ifdef PANEL_GDEP073E01
 #  define EPW_ROW_GDEP073E01(X) X("GDEP073E01", GxEPD2_7C, GxEPD2_730c_GDEP073E01, 2, "e6", ColorMode::E6)
@@ -114,9 +107,8 @@ static constexpr uint16_t epdPageRows(int rowBytes, int height)
 #endif
 
 #define EPAPER_FOR_EACH_PANEL(X) \
-    EPW_ROW_GDEW042T2(X)  \
     EPW_ROW_GDEW075T7(X)  \
-    EPW_ROW_GDEH075Z90(X) \
+    EPW_ROW_GDEY075Z08(X) \
     EPW_ROW_GDEP073E01(X)  \
     EPW_ROW_ACEP730(X) \
     EPW_ROW_GDEY073D46(X)

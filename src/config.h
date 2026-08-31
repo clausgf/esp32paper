@@ -80,25 +80,23 @@ static const int BATTERY_MIN_MV   = 3300; // undervoltage shutdown threshold
 // flash but no RAM. See src/panels.h for the registry / colour models.
 //
 //   flag                   id "panel"         panel                        color_model
-//   PANEL_GDEW042T2        GDEW042T2          4.2"  400x300 b/w            bw
 //   PANEL_GDEW042Z15       GDEW042Z15         4.2"  400x300 b/w/red        bwr
 //   PANEL_GDEW075T7        GDEW075T7          7.5"  800x480 b/w            bw
-//   PANEL_GDEH075Z90       GDEH075Z90         7.5"  800x480 b/w/red        bwr
+//   PANEL_GDEY075Z08       GDEY075Z08         7.5"  800x480 b/w/red        bwr
 //   PANEL_GDEP073E01       GDEP073E01        7.3"  800x480 Spectra 6      e6
 //   PANEL_ACEP730          ACeP730            7.3"  800x480 ACeP 7-colour  c7
 //   PANEL_GDEY073D46       GDEY073D46         7.3"  800x480 ACeP 7-colour  c7
-#if !defined(PANEL_GDEW042T2) && !defined(PANEL_GDEW042Z15) && \
-    !defined(PANEL_GDEW075T7) && \
-    !defined(PANEL_GDEH075Z90) && !defined(PANEL_GDEP073E01) && \
+#if !defined(PANEL_GDEW042Z15) && !defined(PANEL_GDEW075T7) && \
+    !defined(PANEL_GDEY075Z08) && !defined(PANEL_GDEP073E01) && \
     !defined(PANEL_ACEP730) && !defined(PANEL_GDEY073D46)
-#define PANEL_GDEW042T2 1
+#define PANEL_GDEW075T7 1
 #endif
 
 // Panel id used before config.json is available (first boot, pre-config error
 // screens). If unset, the first compiled-in panel is used. Best-effort: on a
 // device whose real panel differs, an early error screen may render on the
 // wrong geometry until config.json (or NVS) supplies the correct panel.
-// #define EPAPER_DEFAULT_PANEL "GDEW042T2"
+// #define EPAPER_DEFAULT_PANEL "GDEW075T7"
 
 // GxEPD2 page-buffer byte budget: the per-panel page height is derived from
 // this so every panel fits without PSRAM. Raise it for fewer PNG re-decodes
