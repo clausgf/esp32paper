@@ -80,7 +80,7 @@ RTC_DATA_ATTR static RtcTelemetry rtc_tel = {0, 0, 0, 0, 0, 0};
 
 // Wall-clock time of the last OTA firmware check. The display refreshes far more
 // often than the firmware changes, so the check (a full HTTP round-trip) is
-// throttled to fw_check_s instead of running every wake — kept out of the
+// throttled to ext_housekeeping_s instead of running every wake — kept out of the
 // radio-on window on most cycles.
 RTC_DATA_ATTR static int64_t rtc_lastFwCheckEpoch = 0;
 
@@ -112,6 +112,8 @@ static int batteryPercent(int mV)
     return 100;
 }
 
+// ***************************************************************************
+
 static DisplayStatus buildStatus()
 {
     DisplayStatus st;
@@ -126,6 +128,8 @@ static DisplayStatus buildStatus()
     return st;
 }
 
+// ***************************************************************************
+
 static AppConfig loadAppConfig()
 {
     AppConfig cfg;
@@ -133,7 +137,6 @@ static AppConfig loadAppConfig()
     cfg.imagePath    = config.getConfigString("image_path", cfg.imagePath);
     cfg.minSleep_s   = config.getConfigInt32("min_sleep_s", cfg.minSleep_s);
     cfg.maxSleep_s   = config.getConfigInt32("max_sleep_s", cfg.maxSleep_s);
-    cfg.errorRetry_s = config.getConfigInt32("error_retry_s", cfg.errorRetry_s);
     const String rotation = config.getConfigString("rotation", "0deg");
     if (rotation == "90deg" || rotation == "90" || rotation == "1")
         cfg.rotation = Rotation::Deg90;
@@ -143,9 +146,11 @@ static AppConfig loadAppConfig()
         cfg.rotation = Rotation::Deg270;
     else if (rotation != "0deg" && rotation != "0")
         logger.warn(LOG_TAG, "invalid rotation '%s', using 0deg", rotation.c_str());
-    cfg.fwCheck_s    = config.getConfigInt32("fw_check_s", cfg.fwCheck_s);
+    cfg.ext_housekeeping_s = config.getConfigInt32("ext_housekeeping_s", cfg.ext_housekeeping_s);
     return cfg;
 }
+
+// ***************************************************************************
 
 static void registerAppConfig()
 {
@@ -155,9 +160,11 @@ static void registerAppConfig()
     static IotConfigValue<String>  cvImagePath(config, d.imagePath, "image_path");
     static IotConfigValue<int32_t> cvMinSleep(config, d.minSleep_s, "min_sleep_s");
     static IotConfigValue<int32_t> cvMaxSleep(config, d.maxSleep_s, "max_sleep_s");
-    static IotConfigValue<int32_t> cvErrorRetry(config, d.errorRetry_s, "error_retry_s");
-    static IotConfigValue<int32_t> cvFwCheck(config, d.fwCheck_s, "fw_check_s");
+    static IotConfigValue<int32_t> cvFwCheck(config, d.ext_housekeeping_s, "ext_housekeeping_s");
+    // log_level and sleep_s are registered by the library itself.
 }
+
+// ***************************************************************************
 
 static String buildConfigSchema()
 {
@@ -172,7 +179,7 @@ static String buildConfigSchema()
             ["panel", "rotation"],
             ["image_path"],
             ["min_sleep_s", "max_sleep_s"],
-            ["error_retry_s", "fw_check_s"]
+            ["error_retry_s", "ext_housekeeping_s"]
         ]
     },
 
@@ -206,9 +213,9 @@ static String buildConfigSchema()
             "description": "Deep-sleep interval in seconds after a full-screen error page.",
             "minimum": 1
         },
-        "fw_check_s": {
+        "ext_housekeeping_s": {
             "type": "integer",
-            "description": "Minimum time between two checks for firmware updates in seconds.",
+            "description": "Minimum time between two extended housekeeping runs (including firmware updates) in seconds.",
             "minimum": 1
         }
     }
@@ -218,6 +225,7 @@ static String buildConfigSchema()
     return schema;
 }
 
+// ***************************************************************************
 // Panel id persisted in NVS (namespace "epaper") so pre-config error screens use
 // the right geometry after the first successful config on a multi-panel build.
 static String nvsGetPanel()
@@ -237,6 +245,7 @@ static void nvsSetPanel(const String &id)
     p.end();
 }
 
+// ***************************************************************************
 // "Has config.json ever been fetched successfully?" — persisted in NVS so it
 // survives power loss. When false (fresh flash / erased NVS) the first cycle
 // fetches config synchronously so the very first render already uses the
@@ -258,6 +267,8 @@ static void nvsSetConfigSeen()
     p.end();
 }
 
+// ***************************************************************************
+
 static String nvsGetSchemaFirmwareVersion()
 {
     Preferences p;
@@ -274,6 +285,8 @@ static void nvsSetSchemaFirmwareVersion(const String &version)
     p.putString("schema_fw", version);
     p.end();
 }
+
+// ***************************************************************************
 
 static void uploadConfigSchemaIfNeeded()
 {
@@ -301,6 +314,8 @@ static void uploadConfigSchemaIfNeeded()
     }
 }
 
+// ***************************************************************************
+
 static int parseMaxAge(const String &cacheControl)
 {
     int idx = cacheControl.indexOf("max-age=");
@@ -308,6 +323,7 @@ static int parseMaxAge(const String &cacheControl)
     return cacheControl.substring(idx + 8).toInt();
 }
 
+// ***************************************************************************
 // Schedule-aligned sleep duration.
 //
 // nicepaper's Cache-Control max-age counts from when the server generated the
@@ -372,12 +388,19 @@ static ImageResult fetchImage(const AppConfig &cfg)
 // ***************************************************************************
 
 // Show a full-screen error, then deep-sleep for a shorter retry interval.
-[[noreturn]] static void failScreen(ErrorIcon icon, const String &title,
-                                     const String &message, int retry_s)
+static void failureScreen(ErrorIcon icon, const String &title, const String &message)
 {
     displayRenderer.showError(icon, title, message, buildStatus());
     logger.error(LOG_TAG, "%s — %s", title.c_str(), message.c_str());
-    iot.deepSleep(retry_s, /*panic*/ false);
+}
+
+// Show a full-screen error, then deep-sleep for a shorter retry interval.
+[[noreturn]] static void panicScreen(ErrorIcon icon, const String &title,
+                                     const String &message)
+{
+    failureScreen(icon, title, message);
+    //iot.deepSleep(retry_s, /*panic*/ false);
+    iot.panic("%s: %s", title.c_str(), message.c_str());
     while (true) {} // never reached
 }
 
@@ -414,6 +437,7 @@ static void radio_off()
     logger.info(LOG_TAG, "WiFi off at %lu ms", after_radio_off_ms);
 }
 
+// ***************************************************************************
 // Network housekeeping overlaps the (multi-second) e-paper refresh. It runs
 // exactly once, driven by DisplayRenderer::renderImage's busy callback.
 static void housekeeping()
@@ -421,12 +445,12 @@ static void housekeeping()
     before_housekeeing_ms = millis();
     iot.resetWatchdog();
     uploadConfigSchemaIfNeeded();
-    // OTA check, throttled to fw_check_s (a real update reboots): the display
+    // OTA check, throttled to ext_housekeeping_s (a real update reboots): the display
     // changes far more often than the firmware. time() is valid here (NTP
     // synced in iot.begin); rtc_lastFwCheckEpoch==0 forces a check on cold boot.
     int64_t now = (int64_t)time(nullptr);
-    if (cfg.fwCheck_s <= 0 || rtc_lastFwCheckEpoch == 0 ||
-        (now - rtc_lastFwCheckEpoch) >= cfg.fwCheck_s)
+    if (cfg.ext_housekeeping_s <= 0 || rtc_lastFwCheckEpoch == 0 ||
+        (now - rtc_lastFwCheckEpoch) >= cfg.ext_housekeeping_s)
     {
         rtc_lastFwCheckEpoch = now;
         IotResult r = api.updateFirmware();
@@ -489,8 +513,7 @@ void setup()
     Serial.begin(115200);
 
     // Register the app config keys with arduino4iot, else updateConfig() ignores
-    // them (only registered keys are stored in NVRAM). log_level and sleep_s
-    // are registered by the library itself.
+    // them (only registered keys are stored in NVRAM).
     registerAppConfig();
 
     // --- seed the deployment bootstrap config into NVS (once) ---
@@ -542,20 +565,17 @@ void setup()
     //     the very first boot before any config uses the default).
     displayRenderer.setPanel(nvsGetPanel());
 
-    // Default retry interval until config.json is loaded.
-    int retry_s = AppConfig{}.errorRetry_s;
-
     // --- connect WiFi (seeded creds from NVS), init subsystems, sync NTP;
     //     panics on undervoltage ---
     if (!iot.begin())
     {
         if (WiFi.status() != WL_CONNECTED)
-            failScreen(ErrorIcon::NoWifi, "No WiFi",
-                       "Could not join the WiFi network.\n\n"
-                       "A new device must be seed-flashed once.\nRetrying shortly.", retry_s);
+            panicScreen(ErrorIcon::NoWifi, "No WiFi",
+                        "Could not join the WiFi network.\n\n"
+                        "A new device must be seed-flashed once.\nRetrying shortly.");
         else
-            failScreen(ErrorIcon::Warning, "No time sync",
-                       "WiFi is up but NTP time sync failed.\n\nRetrying shortly.", retry_s);
+            panicScreen(ErrorIcon::Warning, "No time sync",
+                        "WiFi is up but NTP time sync failed.\n\nRetrying shortly.");
     }
     after_connect_ms = millis();
 
@@ -565,28 +585,31 @@ void setup()
     if (!prov)
     {
         if (prov.isTransportError())
-            failScreen(ErrorIcon::NoWifi, "No server connection",
-                       "Cannot reach the nice4iot server.\n\n"
-                       "Check the API URL, TLS certificate\nand network.", retry_s);
-        else if (prov.httpStatus == IotResult::STATUS_NO_PROVISIONING_TOKEN)
-            failScreen(ErrorIcon::Warning, "No provisioning token",
-                       "No provisioning token is configured.\n\n"
-                       "Set it in settings.h.", retry_s);
-        else if (prov.httpStatus == 403)
-            failScreen(ErrorIcon::Warning, "Provisioning rejected",
-                       "The server rejected this device.\n\n"
-                       "Check the token, and that the device\n"
-                       "is approved and active.", retry_s);
+            panicScreen(ErrorIcon::NoWifi, "No server connection",
+                        "Cannot reach the nice4iot server.\n\n"
+                        "Check the API URL, TLS certificate\nand network.");
+            else if (prov.httpStatus == IotResult::STATUS_NO_PROVISIONING_TOKEN)
+            panicScreen(ErrorIcon::Warning, "No provisioning token",
+                        "No provisioning token is configured.\n\n"
+                        "Set it in settings.h.");
+            else if (prov.httpStatus == 403)
+            panicScreen(ErrorIcon::Warning, "Provisioning rejected",
+                        "The server rejected this device.\n\n"
+                        "Check the token, and that the device\n"
+                        "is approved and active.");
         else if (prov.httpStatus == IotResult::STATUS_MALFORMED_RESPONSE)
-            failScreen(ErrorIcon::Warning, "Provisioning failed",
-                       "Unexpected response from the server.\n\n"
-                       "Is this a nice4iot API URL?", retry_s);
+            panicScreen(ErrorIcon::Warning, "Provisioning failed",
+                        "Unexpected response from the server.\n\n"
+                        "Is this a nice4iot API URL?");
         else
-            failScreen(ErrorIcon::Warning, "Provisioning failed",
-                       String("The server returned status ") + prov.httpStatus +
-                       ".\n\nCheck the token and device approval.", retry_s);
+            panicScreen(ErrorIcon::Warning, "Provisioning failed",
+                        String("The server returned status ") + prov.httpStatus +
+                        ".\n\nCheck the token and device approval.");
     }
     after_provisioning_ms = millis();
+
+    // Networking and the REST API work here. The connectivity basically works.
+    // Thus from here, we can use failureScreen instead of panicing.
 
     // --- config: If NVS-cached config from the previous cycle available, 
     //     use it for this cycle and refresh config.json 
@@ -595,7 +618,6 @@ void setup()
     if (!haveCachedConfig && config.updateConfig().isOkOrNotModified())
         nvsSetConfigSeen(); // bootstrapped; next cycle uses the cache + bg refresh
     cfg = loadAppConfig();
-    retry_s = cfg.errorRetry_s;
     logger.verbose(LOG_TAG, "heap: %u free / %u total, PSRAM %u B",
                     (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getHeapSize(),
                     (unsigned)ESP.getPsramSize());
@@ -650,24 +672,25 @@ void setup()
             displayed = false;
             housekeeping();
             const String &detail = displayRenderer.renderErrorDetail();
-            failScreen(ErrorIcon::Warning, "Image error",
-                       detail.length() ? detail
-                                       : "The received image\nis not a valid PNG.",
-                       retry_s);
+            failureScreen(ErrorIcon::Warning, "Image error",
+                detail.length() ? detail : "The received image\nis not a valid PNG.");
+            sleep_s = default_retry_s;
         }
     }
     else if (img.status < 0)
     {
         // transport error (TLS/connection/timeout) — same class as provisioning
-        failScreen(ErrorIcon::NoWifi, "No server connection",
-                   "Cannot reach the nice4iot server.\n\n"
-                   "Check the API URL, TLS certificate\nand network.", retry_s);
+        failureScreen(ErrorIcon::NoWifi, "No image server connection",
+            "Cannot reach the nice4iot server for image download.\n\n"
+            "Check the API URL, TLS certificate\nand network.");
+        sleep_s = default_retry_s;
     }
     else
     {
-        failScreen(ErrorIcon::Warning, "No image",
-                   String("Server responded: ") + img.status + ".\n\n"
-                   "Is a screen assigned\nto this device?", retry_s);
+        failureScreen(ErrorIcon::Warning, "No image",
+            String("Server responded: ") + img.status + ".\n\n"
+            "Is a screen assigned\nto this device?");
+        sleep_s = default_retry_s;
     }
     after_display_ms = millis();
 

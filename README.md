@@ -46,7 +46,7 @@ WiFi radio switched off part-way through:
    `api.apiGet(".../ext/epaper/{project}/screens/{device}/image.png")`
 4. **Render** (paged, PNG re-decoded per page) + WiFi/battery overlay —
    `displayRenderer.renderImage()`. While the panel refreshes (seconds), a
-   busy-callback runs the **housekeeping** — a throttled OTA check (`fw_check_s`),
+   busy-callback runs the **housekeeping** — a throttled OTA check (`ext_housekeeping_s`),
    a `config.json` refresh *for the next cycle*, telemetry and log flush — then
    **switches WiFi off** before the refresh even finishes. For the remaining
    multi-second BUSY-wait the CPU **light-sleeps** in ~20 ms slices (~0.8 mA
@@ -202,9 +202,8 @@ Served by nice4iot at `file/{project}/{device}/config.json`; all keys optional:
 | `image_path`   | string | `ext/epaper/{project}/screens/{device}/image.png` | image API path template |
 | `min_sleep_s`  | int    | `300`                                             | lower clamp on `max-age` sleep |
 | `max_sleep_s`  | int    | `86400`                                           | upper clamp on `max-age` sleep |
-| `error_retry_s`| int    | `900`                                             | sleep after an error screen |
 | `rotation`     | string | `0deg`                                            | GxEPD2 rotation: `0deg`, `90deg`, `180deg`, `270deg` |
-| `fw_check_s`   | int    | `86400`                                           | min seconds between OTA checks (`0` = every wake) |
+| `ext_housekeeping_s`   | int    | `86400`                                           | min seconds between OTA checks (`0` = every wake) |
 
 Changing a key takes effect on the *next* cycle (config is refreshed in the
 background — see [How it works](#how-it-works)).
@@ -297,7 +296,7 @@ so **only its buffer** uses RAM. Firmware size (this build, all five panels,
   GxEPD2 would silently clip/misplace it and show garbage with no error.
 - **Energy** — as little as possible on the radio-on critical path: config is
   used from the NVS cache and refreshed in the background for the *next* cycle,
-  the OTA check is throttled (`fw_check_s`), and OTA/telemetry/logs overlap the
+  the OTA check is throttled (`ext_housekeeping_s`), and OTA/telemetry/logs overlap the
   refresh via GxEPD2's busy callback (run-once, with a fallback) before WiFi
   switches off. Once housekeeping is done and the radio is off, the CPU
   **light-sleeps** through the rest of the multi-second refresh (the busy
