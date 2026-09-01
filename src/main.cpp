@@ -125,6 +125,8 @@ static DisplayStatus buildStatus()
         st.batteryValid = st.battery_mV > 0;
         st.batteryPct = st.batteryValid ? batteryPercent(st.battery_mV) : -1;
     }
+    st.firmwareVersion = iot.getFirmwareVersion();
+    st.timestamp = iot.getTimeIso();
     return st;
 }
 
@@ -400,6 +402,8 @@ static void failureScreen(ErrorIcon icon, const String &title, const String &mes
 {
     failureScreen(icon, title, message);
     //iot.deepSleep(retry_s, /*panic*/ false);
+    if (STATUS_LED_PIN >= 0)
+        iot.setLed(!STATUS_LED_ON);
     iot.panic("%s: %s", title.c_str(), message.c_str());
     while (true) {} // never reached
 }
@@ -431,10 +435,10 @@ static void radio_off()
     api.closeConnection();
     WiFi.disconnect(true);
     WiFi.mode(WIFI_OFF);
-    if (STATUS_LED_PIN >= 0)
-        iot.setLed(false);
     after_radio_off_ms = millis() - after_boot_ms; // the radio was on from boot until now
     logger.info(LOG_TAG, "WiFi off at %lu ms", after_radio_off_ms);
+    if (STATUS_LED_PIN >= 0)
+        iot.setLed(!STATUS_LED_ON);
 }
 
 // ***************************************************************************
@@ -542,7 +546,7 @@ void setup()
     if (STATUS_LED_PIN >= 0)
     {
         iot.setLedPin(STATUS_LED_PIN);
-        iot.setLed(true);
+        iot.setLed(STATUS_LED_ON);
     }
     if (BATTERY_PIN >= 0)
     {
@@ -646,12 +650,7 @@ void setup()
 
     iot.startWatchdog(90); // care for long refresh cycle of 7-colour panel (tens of seconds)
 
-    if (img.status == 304)
-    {
-        // Nothing to refresh. Housekeeping still runs.
-        housekeeping();
-    }
-    else if (img.status == 200 && img.body.length() > 0)
+    if (img.status == 200 && img.body.length() > 0)
     {
         displayed = true; // committed to rendering; the overlap reports this
         bool ok = displayRenderer.renderImage(
@@ -676,6 +675,11 @@ void setup()
                 detail.length() ? detail : "The received image\nis not a valid PNG.");
             sleep_s = default_retry_s;
         }
+    }
+    else if (img.status == 304)
+    {
+        // Nothing to refresh. Housekeeping still runs.
+        housekeeping();
     }
     else if (img.status < 0)
     {
@@ -723,4 +727,13 @@ void setup()
 void loop()
 {
     // never reached: setup() ends in deep sleep
+    while (1) {
+        if (STATUS_LED_PIN >= 0)
+            iot.setLed(STATUS_LED_ON);
+        delay(100);
+        if (STATUS_LED_PIN >= 0)
+            iot.setLed(!STATUS_LED_ON);
+        delay(900);
+        Serial.print(".");
+    }
 }

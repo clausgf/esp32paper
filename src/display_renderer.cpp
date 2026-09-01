@@ -312,6 +312,16 @@ void DisplayRenderer::drawOverlay_(const DisplayStatus &st)
 
     int wifiX = batX - 8 - 18; // 18px wide wifi block + gap
     drawWifi_(wifiX, y + 1, st);
+
+    String msg = st.timestamp + "  " + st.firmwareVersion;
+    gx->setTextColor(GxEPD_BLACK);
+    gx->setTextSize(1);
+    gx->setRotation(3);
+    int16_t bx, by; uint16_t bw, bh;
+    gx->getTextBounds(msg, 0, 0, &bx, &by, &bw, &bh);
+    gx->setCursor(0, gx->height()-bh);
+    gx->print(msg);
+    gx->setRotation(0);
 }
 
 void DisplayRenderer::drawBattery_(int x, int y, const DisplayStatus &st)

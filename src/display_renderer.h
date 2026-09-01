@@ -27,6 +27,8 @@ struct DisplayStatus
     bool batteryValid  = false;
     int  battery_mV    = 0;
     int  batteryPct    = -1;  // 0..100, -1 = unknown
+    String firmwareVersion = "unknown";
+    String timestamp = "unknown";
 };
 
 // Icon shown on a full-screen error page.

@@ -37,6 +37,7 @@ static const int EPD_BUSY = 4;
 
 // XIAO ESP32-S3's onboard user LED.
 static const int STATUS_LED_PIN = 21;
+static const bool STATUS_LED_ON = true;
 
 // EE04's battery ADC (A0/GPIO1) sits behind an enable gate (A5/GPIO6) that
 // main.cpp drives HIGH at boot. Divider ratio assumed 2:1 (unconfirmed —
@@ -60,6 +61,7 @@ static const int EPD_BUSY = 25;  // BUSY
 
 // On-board status LED (ESP32-WROOM devkit style). Set to -1 if absent.
 static const int STATUS_LED_PIN = 2;
+static const bool STATUS_LED_ON = false;
 
 // Battery voltage divider on ADC. The Waveshare driver board has no battery
 // input by default; these values assume an external 2:1 divider on GPIO34.
