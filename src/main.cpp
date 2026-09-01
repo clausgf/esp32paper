@@ -72,6 +72,7 @@ struct RtcTelemetry
     int32_t  cycle_ms;           // total awake time of the previous cycle
     int32_t  refresh_ms;         // previous physical panel refresh
     int32_t  decode_transfer_ms; // previous PNG decode + transfer to panel RAM
+    int32_t  display_ms;         // previous overall display (decode+transfer+refresh)
     int32_t  radio_on_ms;        // previous cycle's WiFi-on window (boot -> WiFi off)
     int32_t  deferred_cycles;    // 304 wakes since the last telemetry POST
 };
@@ -188,31 +189,27 @@ static String buildConfigSchema()
         },
         "image_path": {
             "type": "string",
-            "description": "API path template for the rendered image ({project}/{device} are auto-expanded).",
-            "default": "ext/epaper/{project}/screens/{device}/image.png"
+            "description": "API path template for the rendered image ({project}/{device} are auto-expanded)."
         },
         "min_sleep_s": {
             "type": "integer",
             "description": "Lower clamp for the Cache-Control max-age derived sleep (seconds).",
-            "minimum": 1,
-            "default": 300
+            "minimum": 1
         },
         "max_sleep_s": {
             "type": "integer",
             "description": "Upper clamp for the Cache-Control max-age derived sleep (seconds).",
-            "minimum": 1,
-            "default": 3600
+            "minimum": 1
         },
         "error_retry_s": {
             "type": "integer",
             "description": "Deep-sleep interval in seconds after a full-screen error page.",
-            "minimum": 1,
-            "default": 900
+            "minimum": 1
         },
         "fw_check_s": {
             "type": "integer",
             "description": "Minimum time between two checks for firmware updates in seconds.",
-            "minimum": 0
+            "minimum": 1
         }
     }
 })json";
@@ -386,9 +383,109 @@ static ImageResult fetchImage(const AppConfig &cfg)
 
 // ***************************************************************************
 
+// Per-wakeup state shared by setup() and the display refresh callback.
+static unsigned long after_boot_ms = 0;
+static unsigned long after_connect_ms = 0;
+static unsigned long after_provisioning_ms = 0;
+static unsigned long after_config_ms = 0;
+static unsigned long after_fetch_ms = 0;
+static unsigned long after_display_ms = 0;
+static unsigned long after_radio_off_ms = 0;
+static unsigned long before_housekeeing_ms = 0;
+static unsigned long after_housekeeping_ms = 0;
+static bool haveCachedConfig;
+static bool displayed = false;
+static int sleep_s;
+static AppConfig cfg;
+static ImageResult img;
+
+// ***************************************************************************
+
+// Switch the WiFi radio off (the single biggest saving) and the LED with it.
+static void radio_off()
+{
+    logger.flush();
+    api.closeConnection();
+    WiFi.disconnect(true);
+    WiFi.mode(WIFI_OFF);
+    if (STATUS_LED_PIN >= 0)
+        iot.setLed(false);
+    after_radio_off_ms = millis() - after_boot_ms; // the radio was on from boot until now
+    logger.info(LOG_TAG, "WiFi off at %lu ms", after_radio_off_ms);
+}
+
+// Network housekeeping overlaps the (multi-second) e-paper refresh. It runs
+// exactly once, driven by DisplayRenderer::renderImage's busy callback.
+static void housekeeping()
+{
+    before_housekeeing_ms = millis();
+    iot.resetWatchdog();
+    uploadConfigSchemaIfNeeded();
+    // OTA check, throttled to fw_check_s (a real update reboots): the display
+    // changes far more often than the firmware. time() is valid here (NTP
+    // synced in iot.begin); rtc_lastFwCheckEpoch==0 forces a check on cold boot.
+    int64_t now = (int64_t)time(nullptr);
+    if (cfg.fwCheck_s <= 0 || rtc_lastFwCheckEpoch == 0 ||
+        (now - rtc_lastFwCheckEpoch) >= cfg.fwCheck_s)
+    {
+        rtc_lastFwCheckEpoch = now;
+        IotResult r = api.updateFirmware();
+        logger.info(LOG_TAG, "firmware update -> %d/%d/%d", r.kind, r.transportError, r.httpStatus);
+    }
+    // Refresh config.json for the NEXT cycle (off this cycle's critical path);
+    // the first cycle already fetched it synchronously above, so only the
+    // steady state (cache present) refreshes here. The updated values land in
+    // NVS for the next wake; the result (usually a 304) is not needed here.
+    if (haveCachedConfig) {
+        IotResult r = config.updateConfig();
+        logger.info(LOG_TAG, "config update -> %d/%d/%d", r.kind, r.transportError, r.httpStatus);
+    }
+    {
+        IotResult r = iot.postSystemTelemetry();
+        if (!r)
+            logger.info(LOG_TAG, "post system telemetry -> %d/%d/%d", r.kind, r.transportError, r.httpStatus);
+    }
+    {
+        IotTelemetry t;
+        // This cycle's phases known so far (up to WiFi-off):
+        t.add("boot_ms", (int) after_boot_ms);
+        t.add("connect_ms", (int) (after_connect_ms - after_boot_ms));
+        t.add("provisioning_ms", (int) (after_provisioning_ms - after_connect_ms));
+        t.add("config_ms", (int) (after_config_ms - after_provisioning_ms));
+        t.add("fetch_ms", (int) (after_fetch_ms - after_config_ms));
+        t.add("image_status", img.status);
+        t.add("image_bytes", (int)img.body.length());
+        t.add("image_maxage_s", img.maxAge);
+        t.add("displayed", displayed ? 1 : 0);
+        t.add("heap_free", (int)ESP.getFreeHeap());
+        t.add("sleep_s", sleep_s > 0 ? sleep_s : iot.getLastSleepDuration_s());
+        t.add("panel", displayRenderer.activePanel());        // active panel id
+        t.add("supported_panels", displayRenderer.supportedPanels());   // compiled-in panels
+        // Previous cycle's end-of-cycle phases, buffered in RTC RAM (see below),
+        // plus any silent 304 wakes skipped since the last POST.
+        if (rtc_tel.magic == RTC_TEL_MAGIC)
+        {
+            logger.info(LOG_TAG, "last_cycle_ms=%d last_refresh_ms=%d last_decode_transfer_ms=%d last_radio_on_ms=%d deferred_cycles=%d",
+                rtc_tel.cycle_ms, rtc_tel.refresh_ms, rtc_tel.decode_transfer_ms, rtc_tel.radio_on_ms, rtc_tel.deferred_cycles);
+            t.add("last_cycle_ms", rtc_tel.cycle_ms);
+            t.add("last_refresh_ms", rtc_tel.refresh_ms);
+            t.add("last_decode_transfer_ms", rtc_tel.decode_transfer_ms);
+            t.add("last_display_ms", rtc_tel.display_ms);
+            t.add("last_radio_on_ms", rtc_tel.radio_on_ms);
+            t.add("deferred_cycles", rtc_tel.deferred_cycles);
+        }
+        IotResult r = iot.postTelemetry("epaper", t);
+        logger.info(LOG_TAG, "post epaper telemetry -> %d/%d/%d", r.kind, r.transportError, r.httpStatus);
+    }
+    after_housekeeping_ms = millis();
+    radio_off();
+}
+
+// ***************************************************************************
+
 void setup()
 {
-    unsigned long tBoot = millis();
+    after_boot_ms = millis();
     Serial.begin(115200);
 
     // Register the app config keys with arduino4iot, else updateConfig() ignores
@@ -460,7 +557,7 @@ void setup()
             failScreen(ErrorIcon::Warning, "No time sync",
                        "WiFi is up but NTP time sync failed.\n\nRetrying shortly.", retry_s);
     }
-    unsigned long connect_ms = millis() - tBoot; // WiFi connect + NTP sync
+    after_connect_ms = millis();
 
     // updateProvisioning() returns a typed result so we can show a matching
     // error screen (arduino4iot >= the updateProvisioning() API).
@@ -489,14 +586,15 @@ void setup()
                        String("The server returned status ") + prov.httpStatus +
                        ".\n\nCheck the token and device approval.", retry_s);
     }
+    after_provisioning_ms = millis();
 
     // --- config: If NVS-cached config from the previous cycle available, 
     //     use it for this cycle and refresh config.json 
     //     in the background (housekeeping) for the NEXT cycle
-    bool haveCachedConfig = nvsConfigSeen();
+    haveCachedConfig = nvsConfigSeen();
     if (!haveCachedConfig && config.updateConfig().isOkOrNotModified())
         nvsSetConfigSeen(); // bootstrapped; next cycle uses the cache + bg refresh
-    AppConfig cfg = loadAppConfig();
+    cfg = loadAppConfig();
     retry_s = cfg.errorRetry_s;
     logger.verbose(LOG_TAG, "heap: %u free / %u total, PSRAM %u B",
                     (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getHeapSize(),
@@ -507,109 +605,28 @@ void setup()
         displayRenderer.setPanel(cfg.panel);
         nvsSetPanel(displayRenderer.activePanel()); // remember for next boot
     }
+    after_config_ms = millis();
 
-    unsigned long t0 = millis();
-    ImageResult img = fetchImage(cfg);
-    unsigned long net_ms = millis() - (tBoot + connect_ms); // provision + image GET
+    img = fetchImage(cfg);
+    after_fetch_ms = millis();
 
     // Decide the sleep duration now so deep sleep after the refresh is immediate.
     // This is the schedule-aligned estimate at WiFi-off time (reported in
     // telemetry); it is recomputed just before deepSleep() with the full active
     // time once the refresh has finished.
-    int sleep_s = img.maxAge > 0
-                      ? alignedSleep_s(img.maxAge, millis() - t0,
-                                       cfg.minSleep_s, cfg.maxSleep_s)
-                      : -1;
+    sleep_s = img.maxAge > 0
+                  ? alignedSleep_s(img.maxAge, millis(),
+                                   cfg.minSleep_s, cfg.maxSleep_s)
+                  : -1;
     if (sleep_s > 0)
         iot.setSleepDuration_s(sleep_s);
     // else: keep the arduino4iot default (config "sleep_s")
 
-    bool displayed = false;
-    unsigned long radioOnMs = 0; // WiFi-on window (boot -> WiFi off); set below
-
-    // Switch the WiFi radio off (the single biggest saving) and the LED with it.
-    auto radioOff = [&]()
-    {
-        radioOnMs = millis() - tBoot; // the radio was on from boot until now
-        api.closeConnection();
-        WiFi.disconnect(true);
-        WiFi.mode(WIFI_OFF);
-        if (STATUS_LED_PIN >= 0)
-            iot.setLed(false);
-        logger.info(LOG_TAG, "WiFi off — radio on for %lu ms", radioOnMs);
-    };
-
-    // Network housekeeping meant to overlap the (multi-second) e-paper refresh:
-    // a throttled OTA check, config refresh for the next cycle, telemetry and log
-    // flush over WiFi, then the radio off before the refresh even finishes. Runs
-    // exactly once, driven by the display's busy callback (see renderImage).
-    auto housekeeping = [&]()
-    {
-        iot.resetWatchdog();
-        uploadConfigSchemaIfNeeded();
-        // OTA check, throttled to fw_check_s (a real update reboots): the display
-        // changes far more often than the firmware. time() is valid here (NTP
-        // synced in iot.begin); rtc_lastFwCheckEpoch==0 forces a check on cold boot.
-        int64_t now = (int64_t)time(nullptr);
-        if (cfg.fwCheck_s <= 0 || rtc_lastFwCheckEpoch == 0 ||
-            (now - rtc_lastFwCheckEpoch) >= cfg.fwCheck_s)
-        {
-            rtc_lastFwCheckEpoch = now;
-            api.updateFirmware();
-        }
-        // Refresh config.json for the NEXT cycle (off this cycle's critical path);
-        // the first cycle already fetched it synchronously above, so only the
-        // steady state (cache present) refreshes here. The updated values land in
-        // NVS for the next wake; the result (usually a 304) is not needed here.
-        if (haveCachedConfig)
-            config.updateConfig();
-        iot.postSystemTelemetry();
-        IotTelemetry t;
-        // This cycle's phases known so far (up to WiFi-off):
-        t.add("connect_ms", (int)connect_ms);       // WiFi connect + NTP
-        t.add("net_ms", (int)net_ms);               // provision + image GET (config deferred)
-        t.add("active_ms", (int)(millis() - t0));   // awake since fetch, to WiFi-off
-        t.add("image_status", img.status);
-        t.add("image_bytes", (int)img.body.length());
-        t.add("image_maxage_s", img.maxAge);
-        t.add("displayed", displayed ? 1 : 0);
-        t.add("heap_free", (int)ESP.getFreeHeap());
-        t.add("sleep_s", sleep_s > 0 ? sleep_s : iot.getLastSleepDuration_s());
-        t.add("panel", displayRenderer.activePanel());        // active panel id
-        t.add("supported_panels", displayRenderer.supportedPanels());   // compiled-in panels
-        // Previous cycle's end-of-cycle phases, buffered in RTC RAM (see below),
-        // plus any silent 304 wakes skipped since the last POST.
-        if (rtc_tel.magic == RTC_TEL_MAGIC)
-        {
-            t.add("last_cycle_ms", rtc_tel.cycle_ms);
-            t.add("last_refresh_ms", rtc_tel.refresh_ms);
-            t.add("last_decode_transfer_ms", rtc_tel.decode_transfer_ms);
-            t.add("last_radio_on_ms", rtc_tel.radio_on_ms);
-            t.add("deferred_cycles", rtc_tel.deferred_cycles);
-            rtc_tel.magic = 0;          // consumed — don't resend if this errors out
-            rtc_tel.deferred_cycles = 0;
-        }
-        iot.postTelemetry("epaper", t);
-        logger.flush();
-        radioOff();
-    };
-
-    // The 7-colour full refresh can take tens of seconds; widen the watchdog so
-    // the long BUSY-wait does not trip it (housekeeping also feeds it once).
-    iot.startWatchdog(90);
+    iot.startWatchdog(90); // care for long refresh cycle of 7-colour panel (tens of seconds)
 
     if (img.status == 304)
     {
-        // Nothing to refresh. Housekeeping still runs once so a new firmware
-        // version can publish its schema even when the image is unchanged.
-        logger.info(LOG_TAG, "image unchanged (304), keeping current frame");
-        if (rtc_tel.magic != RTC_TEL_MAGIC) // nothing buffered yet -> init
-        {
-            rtc_tel.magic = RTC_TEL_MAGIC;
-            rtc_tel.cycle_ms = rtc_tel.refresh_ms = rtc_tel.decode_transfer_ms = 0;
-            rtc_tel.deferred_cycles = 0;
-        }
-        rtc_tel.deferred_cycles += 1; // keep prior last_* intact; just count
+        // Nothing to refresh. Housekeeping still runs.
         housekeeping();
     }
     else if (img.status == 200 && img.body.length() > 0)
@@ -631,7 +648,7 @@ void setup()
             // would otherwise never be replaced -- the device would keep failing
             // on the same stale config forever.
             displayed = false;
-            config.updateConfig();
+            housekeeping();
             const String &detail = displayRenderer.renderErrorDetail();
             failScreen(ErrorIcon::Warning, "Image error",
                        detail.length() ? detail
@@ -652,30 +669,21 @@ void setup()
                    String("Server responded: ") + img.status + ".\n\n"
                    "Is a screen assigned\nto this device?", retry_s);
     }
+    after_display_ms = millis();
 
     // A rendered cycle's end-of-cycle phase durations are only complete now
     // (after the refresh); buffer them in RTC RAM so the NEXT cycle reports them
     // as last_* instead of us staying awake with WiFi on to send them. Reset the
     // deferred-wake counter since housekeeping just posted it. (The 304 path did
     // its own RTC bookkeeping above; error paths already deep-slept.)
-    if (displayed)
     {
+        rtc_tel.cycle_ms = (int32_t)(millis());
+        rtc_tel.refresh_ms = displayed ? (int32_t)displayRenderer.lastRefreshMs() : 0;
+        rtc_tel.decode_transfer_ms = displayed ? (int32_t)displayRenderer.lastDecodeTransferMs() : 0;
+        rtc_tel.display_ms = after_display_ms - after_fetch_ms;
+        rtc_tel.radio_on_ms = (int32_t)after_radio_off_ms;
+        rtc_tel.deferred_cycles = rtc_tel.magic == RTC_TEL_MAGIC && !displayed ? rtc_tel.deferred_cycles + 1 : 0;
         rtc_tel.magic = RTC_TEL_MAGIC;
-        rtc_tel.refresh_ms = (int32_t)displayRenderer.lastRefreshMs();
-        rtc_tel.decode_transfer_ms = (int32_t)displayRenderer.lastDecodeTransferMs();
-        rtc_tel.radio_on_ms = (int32_t)radioOnMs;
-        rtc_tel.cycle_ms = (int32_t)(millis() - tBoot);
-        rtc_tel.deferred_cycles = 0;
-
-        // One-line phase summary on serial (durations also ship in telemetry as
-        // last_* next cycle, so the phases are reconstructable without the log).
-        logger.info(LOG_TAG,
-                    "cycle phases [ms]: connect=%u net=%u decode_transfer=%u "
-                    "refresh=%u radio_on=%u active=%u",
-                    (unsigned)connect_ms, (unsigned)net_ms,
-                    (unsigned)displayRenderer.lastDecodeTransferMs(),
-                    (unsigned)displayRenderer.lastRefreshMs(),
-                    (unsigned)radioOnMs, (unsigned)(millis() - tBoot));
     }
 
     // Recompute the schedule-aligned sleep now that the full active window
@@ -683,7 +691,7 @@ void setup()
     // schedule rather than drifting late by the refresh time.
     if (img.maxAge > 0)
         iot.setSleepDuration_s(
-            alignedSleep_s(img.maxAge, millis() - t0, cfg.minSleep_s, cfg.maxSleep_s));
+            alignedSleep_s(img.maxAge, millis(), cfg.minSleep_s, cfg.maxSleep_s));
 
     // WiFi is already off and housekeeping done during the refresh — sleep now.
     iot.deepSleep();

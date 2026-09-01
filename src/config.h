@@ -137,7 +137,7 @@ struct AppConfig
     // arduino4iot; nicepaper resolves {device} to a screen via aliases.json.
     String imagePath = "ext/epaper/{project}/screens/{device}/image.png";
     String panel     = "";            // "" = keep NVS/default panel
-    int    minSleep_s   = 300;        //  5 min
+    int    minSleep_s   = 60;         //  1 min
     int    maxSleep_s   = 24 * 3600;  // 24 h
     int    errorRetry_s = 900;        // 15 min retry after a failure/error screen
     Rotation rotation   = Rotation::Deg0;
