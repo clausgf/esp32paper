@@ -36,19 +36,21 @@ energy — as little as possible on the *radio-on* critical path before the
 refresh, and everything else deferred so it overlaps the slow refresh with the
 WiFi radio switched off part-way through:
 
-1. **Connect** WiFi + NTP — `iot.begin()`. arduino4iot caches the last-good
-   BSSID + channel in RTC RAM for a **scan-free reconnect** and throttles NTP
-   resync to ~24 h; a **cached DHCP lease** (`iot.setDhcpCache()`, enabled here)
+1. **Connect** WiFi + NTP — `iot.begin()` with an `IotNtpClock`. arduino4iot
+   caches the last-good BSSID + channel in RTC RAM for a **scan-free reconnect**
+   and resyncs NTP only every ~24 h; a **cached DHCP lease** (`iot.wifi().setDhcpCache()`, enabled here)
    reuses the last IP on the fast-reconnect path to skip the DHCP DORA.
 2. **Provision** — `api.updateProvisioning()` (no round-trip while the device
    token is still valid)
-3. **GET image** with ETag / `If-None-Match`, using the **NVS-cached config** —
-   `api.apiGet(".../ext/epaper/{project}/screens/{device}/image.png")`
+3. **Conditional GET** of the image (`If-None-Match` / `If-Modified-Since`,
+   validators in RTC RAM), using the **NVS-mirrored config** —
+   `api.getCached("ext/epaper/{project}/screens/{device}/image.png", …)`
 4. **Render** (paged, PNG re-decoded per page) + WiFi/battery overlay —
    `displayRenderer.renderImage()`. While the panel refreshes (seconds), a
    busy-callback runs the **housekeeping** — a throttled OTA check (`fw_check_s`),
-   a `config.json` refresh *for the next cycle*, telemetry and log flush — then
-   **switches WiFi off** before the refresh even finishes. For the remaining
+   a `config.json` refresh *for the next cycle*, the `config.schema.json`
+   publish (only when changed), telemetry — then `iot.radioOff()` flushes the
+   log and **switches WiFi off** before the refresh even finishes. For the remaining
    multi-second BUSY-wait the CPU **light-sleeps** in ~20 ms slices (~0.8 mA
    instead of busy-polling at full clock) until the panel signals done.
 5. **Deep sleep**, schedule-aligned — `iot.deepSleep()`
@@ -64,12 +66,12 @@ Config is used from NVS (cached from the previous cycle) and refreshed in the
 background for the *next* cycle, keeping its round-trip off the critical path;
 the very first boot (no cache yet) fetches it synchronously so the first render
 already uses the configured panel. An unchanged screen returns **304** — no
-redraw and no housekeeping either: the radio goes straight off and the wake is
-merely counted (reported as `deferred_cycles` on the next telemetry POST). OTA
-and telemetry catch up on the next cycle that actually refreshes.
+redraw; housekeeping runs directly and the radio goes off. Its `max-age` still
+sets the next sleep. The image validators are committed only after a successful
+render, so an image that failed to render is fetched again next cycle.
 
 Serious failures show a **full-screen error page** and retry after
-`error_retry_s`; the message matches the cause — no WiFi vs. failed NTP, no
+`error_retry_s`; the message matches the cause — no WiFi, no
 server connection vs. provisioning rejected (classified from arduino4iot's typed
 `IotResult`), or a missing / invalid / wrong-sized image.
 
@@ -112,7 +114,8 @@ hardware and correct it (`src/config.h`).
 
 One firmware supports many panels. Enable any subset via `build_flags` in
 `platformio.ini` (opt-in — all enabled drivers are compiled in); the **active
-panel is chosen at runtime** from `config.json` `"panel"` → NVS → default. Only
+panel is chosen at runtime** from `config.json` `"panel"` (mirrored to NVS) →
+default. Only
 the selected panel allocates its page buffer, so unused ones cost flash, not RAM.
 The `color_model` sent to nicepaper is derived from the panel.
 
@@ -125,8 +128,8 @@ The `color_model` sent to nicepaper is derived from the panel.
 | `PANEL_GDEY073D46` | `GDEY073D46`   | 7.3" 800×480 ACeP 7-colour   | `GxEPD2_730c_GDEY073D46`  | `c7`        |
 
 Set the panel per device in nice4iot's `config.json` (`"panel": "GDEP073E01"`);
-it is persisted in NVS so later boots (and pre-config error screens) use the
-right geometry. `EPAPER_DEFAULT_PANEL` sets the first-boot default (else the
+arduino4iot mirrors it to NVS so later boots (and error screens, even without
+WiFi) use the right geometry. Only compiled-in panel ids are accepted. `EPAPER_DEFAULT_PANEL` sets the first-boot default (else the
 first enabled panel); this build ships it as `GDEW075T7` (7.5" 800×480 b/w,
 e.g. the Seeed panel). Pins are identical for all Waveshare HATs (`src/config.h`).
 Requires `-DENABLE_GxEPD2_GFX=1` so the drivers share a common base (see
@@ -179,8 +182,9 @@ So updates carry no credentials and can be built in public CI.
   `https://github.com/<owner>/<repo>/releases/latest/download/firmware-<env>.bin`.
   Each device's `IOT_BOARD_ID` build define (== its PlatformIO env, e.g.
   `waveshare_esp32_driver`) is reported as `board_id` telemetry and substituted
-  for `{board}` in arduino4iot's default `updateFirmware()` path, so devices
-  request `firmware-{board}.bin` themselves (arduino4iot >= v3.5.0) — copy the
+  for `{board}` in the `iot.ota.update()` path, so devices request
+  `firmware-{board}.bin` themselves (path set explicitly in `src/main.cpp`;
+  arduino4iot's own default is `firmware.bin`) — copy the
   release asset straight into the project, no rename needed:
   `curl -fL <url> -o data/projects/<project>/firmware-<board>.bin` per board.
   arduino4iot then pulls its own on the next wakeup (ETag-conditional).
@@ -192,19 +196,24 @@ So updates carry no credentials and can be built in public CI.
 
 ### Runtime config (`config.json`)
 
-Served by nice4iot at `file/{project}/{device}/config.json`; all keys optional:
+Served by nice4iot at `file/{project}/{device}/config.json`; all keys optional.
+The keys are declared with defaults, limits and descriptions as `IotConfigValue`
+in `src/main.cpp`; arduino4iot clamps / rejects out-of-range values and
+publishes a matching `config.schema.json` (once per changed schema) for
+nice4iot's config form. The schema also lists the library's own keys
+(`battery_min_mv`, `panic_*`).
 
 | key            | type   | default                                           | meaning |
 |----------------|--------|---------------------------------------------------|---------|
 | `log_level`    | int    | library default                                   | arduino4iot log verbosity |
 | `sleep_s`      | int    | library default                                   | fallback sleep if no `max-age` |
-| `panel`        | string | (NVS / build default)                             | panel id (see [Panels](#panels)); persisted in NVS, derives `color_model` |
+| `panel`        | string | `EPAPER_DEFAULT_PANEL` / first enabled panel      | panel id (see [Panels](#panels)), compiled-in ids only; derives `color_model` |
 | `image_path`   | string | `ext/epaper/{project}/screens/{device}/image.png` | image API path template |
 | `min_sleep_s`  | int    | `300`                                             | lower clamp on `max-age` sleep |
 | `max_sleep_s`  | int    | `86400`                                           | upper clamp on `max-age` sleep |
 | `error_retry_s`| int    | `900`                                             | sleep after an error screen |
 | `rotation`     | string | `0deg`                                            | GxEPD2 rotation: `0deg`, `90deg`, `180deg`, `270deg` |
-| `fw_check_s`   | int    | `86400`                                           | min seconds between OTA checks (`0` = every wake) |
+| `fw_check_s`   | int    | `3600`                                            | min seconds between OTA checks (`0` = every wake) |
 
 Changing a key takes effect on the *next* cycle (config is refreshed in the
 background — see [How it works](#how-it-works)).
@@ -222,21 +231,23 @@ Everything flows through nice4iot:
 - **App telemetry** (`kind = "epaper"`), sent in the refresh overlap. Live:
   `connect_ms`, `net_ms`, `active_ms`, `image_status`, `image_bytes`,
   `image_maxage_s`, `displayed`, `heap_free`, `sleep_s`, `panel` (active id),
-  `panels` (compiled-in panel ids). From the previous cycle (buffered in RTC RAM,
+  `supported_panels` (compiled-in panel ids). From the previous cycle (buffered in RTC RAM,
   since they only complete after the refresh / WiFi-off): `last_cycle_ms`,
   `last_refresh_ms`, `last_decode_transfer_ms`, `last_radio_on_ms` (WiFi-on
-  window — the dominant energy metric), and `deferred_cycles` (silent `304` wakes
-  skipped since the last POST). Together these let the phase durations be
+  window — the dominant energy metric), and `deferred_cycles` (`304` wakes since
+  the last refresh-cycle POST). Together these let the phase durations be
   reconstructed without the serial log.
 - **Serial phase markers** — `panel refresh: start` / `… done in X ms`, `WiFi off
   — radio on for X ms`, and an end-of-cycle `cycle phases [ms]: connect=… net=…
   decode_transfer=… refresh=… radio_on=… active=…` summary.
-- **Logging** — buffered, flushed in the overlap before WiFi off.
+- **Logging** — buffered, flushed by `iot.radioOff()` in the overlap; lines
+  logged after WiFi off (or while offline) are kept in RTC RAM and sent with the
+  next cycle.
 
 ### Memory & paging
 
 Plain **ESP32-WROOM-32 (4 MB flash, no PSRAM)**, ~180 KB free heap. The
-refresh-time peak is the compressed PNG (`String`, ≤ ~40 KB) + pngle (~36 KB,
+refresh-time peak is the compressed PNG (`std::string`, ≤ ~40 KB) + pngle (~36 KB,
 embeds the 32 KB DEFLATE window) + the GxEPD2 **page buffer**. The uncompressed
 bitmap is never held whole: GxEPD2 renders in pages, the PNG re-decoded per page.
 Page height is derived at compile time from a byte budget (`EPAPER_PAGE_BYTES`,
@@ -269,17 +280,18 @@ so **only its buffer** uses RAM. Firmware size (this build, all five panels,
   layout, fonts, dithering or schedule parsing on the device.
 - **Sleep from `Cache-Control: max-age`** — nicepaper's cache header *is* the
   schedule, reused as sleep time (clamped to `min/max_sleep_s`).
-- **Direct `apiGet` to the extension endpoint** — keeps the `ETag`/
-  `Cache-Control` headers and library re-provisioning (unlike `apiForward`);
-  path configurable via `image_path`.
+- **Direct `api.getCached()` to the extension endpoint** — conditional GET with
+  `Cache-Control: max-age` and library re-provisioning; path configurable via
+  `image_path`.
 - **Device addresses its screen by its own name** — `{device}` → screen via
   `aliases.json`; re-point server-side without reflashing.
-- **ETag in RTC RAM** — sent as `If-None-Match`; `304` skips the redraw, the
-  single biggest energy saving.
+- **Image validators in RTC RAM** (`IotRtcSlot`, survives deep sleep and
+  watchdog resets) — sent as `If-None-Match`/`If-Modified-Since`; `304` skips
+  the redraw, the single biggest energy saving.
 - **Paged rendering, budget-sized** — see [Memory & paging](#memory--paging); a
   validation decode runs first so a corrupt PNG never reaches the panel.
 - **Multi-panel, runtime-selected** — all enabled panels compile in; a factory
-  creates the one named by `config.json`/NVS/default as a `GxEPD2_GFX*` (needs
+  creates the one named by `config.json` (NVS mirror) or the default as a `GxEPD2_GFX*` (needs
   `-DENABLE_GxEPD2_GFX=1`). Only the selected panel's page buffer is heap-
   allocated, so unused panels cost flash but no RAM (see `src/panels.h`).
 - **Colour mapping matches the panel** — one code path: a nearest-RGB match
@@ -302,10 +314,10 @@ so **only its buffer** uses RAM. Firmware size (this build, all five panels,
   switches off. Once housekeeping is done and the radio is off, the CPU
   **light-sleeps** through the rest of the multi-second refresh (the busy
   callback naps in ~20 ms slices, ~0.8 mA vs. ~40 mA busy-polling) instead of
-  spinning on BUSY. A `304` (unchanged) skips housekeeping entirely — radio straight
-  off, the wake merely counted as `deferred_cycles`. Sleep is **schedule-aligned**
+  spinning on BUSY. A `304` (unchanged) runs housekeeping directly and switches
+  the radio off. Sleep is **schedule-aligned**
   (`max-age − elapsed-since-fetch`) so wakeups don't drift late by the refresh.
-  Scan-free WiFi reconnect + cached DHCP lease (`setDhcpCache`) come from
+  Scan-free WiFi reconnect + cached DHCP lease (`iot.wifi().setDhcpCache()`) come from
   arduino4iot, skipping the scan and DHCP DORA each wake. Watchdog
   widened to 90 s for the long refresh. Caveat: a real OTA *download* in that
   window reboots mid-refresh (harmless, re-rendered next boot).
@@ -345,8 +357,8 @@ isn't worth it.
       (`bwr`/`e6`/`c7`, paged `GxEPD2_3C`/`_7C`) need first-device verification.
       `seeed_xiao_esp32s3`'s pin mapping (`EPD_ENABLE_PIN` power gate incl.) is
       sourced from Seeed's docs/library, not hardware-tested here.
-- [ ] **First-boot geometry (multi-panel).** Before any `config.json`/NVS panel,
-      a pre-config error screen renders on the compile-time default geometry
+- [ ] **First-boot geometry (multi-panel).** Before `config.json` was fetched
+      once, an error screen renders on the compile-time default geometry
       (best effort) — wrong on a non-default device until config runs once.
 - [ ] **Verify the refresh/housekeeping overlap on hardware.** Busy-callback
       timing, the light-sleep BUSY-wait sampling the panel correctly, WiFi-off
@@ -358,8 +370,7 @@ isn't worth it.
       `setDhcpCache`, shipped in v3.4 and enabled here, ~0.4 s).
 - [ ] **Confirm the extension endpoint accepts the device bearer token.** If
       nice4iot gates it only via per-project activation / `X-Api-Key` instead,
-      switch to `apiForward` (losing header-driven sleep) — `image_path` is
-      configurable.
+      switch to `iot.forward.getCached()` — `image_path` is configurable.
 - [ ] **Re-decode CPU vs. RAM.** Paged rendering re-decodes per page (+1 to
       validate); raise `EPAPER_PAGE_BYTES` for fewer pages when DRAM allows.
 - [ ] **Battery curve is approximate** (resting-voltage table; sags under load).
@@ -385,10 +396,10 @@ esp32paper/
 ├── include/settings.h.example  # copy to settings.h (WiFi + nice4iot secrets)
 ├── lib/pngle/                  # vendored PNG decoder
 └── src/
-    ├── config.h                # pins, panel opt-in flags, AppConfig defaults
+    ├── config.h                # pins, battery, panel opt-in flags
     ├── panels.h                # panel registry + runtime factory (GxEPD2_GFX*)
     ├── display_renderer.{h,cpp}# GxEPD2 (paged) + pngle → panel, overlay, errors
-    └── main.cpp                # the wakeup cycle
+    └── main.cpp                # config keys + the wakeup cycle
 ```
 
 ## Related projects

@@ -13,6 +13,7 @@
 #pragma once
 
 #include <Arduino.h>
+#include <string>
 #include "config.h"
 
 #include <GxEPD2_GFX.h>
@@ -169,17 +170,14 @@ static String epdSupportedPanelsCsv()
     return s;
 }
 
-// JSON string values for the compiled-in panel ids, without surrounding array
-// brackets. Panel ids are registry constants and need no additional escaping.
-static String epdSupportedPanelsJsonEnum()
+// Compiled-in panel ids separated by '|' (IotConfigMeta::enumValues).
+static std::string epdSupportedPanelsEnum()
 {
-    String s;
+    std::string s;
     for (size_t i = 0; i < EPAPER_PANEL_COUNT; i++)
     {
-        if (i) s += ", ";
-        s += "\"";
+        if (i) s += "|";
         s += EPAPER_PANELS[i].id;
-        s += "\"";
     }
     return s;
 }

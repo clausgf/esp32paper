@@ -1,6 +1,5 @@
 /**
- * esp32paper — compile-time board/panel configuration and the runtime
- * AppConfig read from the nice4iot-served config.json.
+ * esp32paper — compile-time board/panel configuration.
  *
  * Two boards are supported (see platformio.ini envs); the pin mapping below
  * is picked at compile time from the board's Arduino core define:
@@ -75,9 +74,10 @@ static const int BATTERY_MIN_MV   = 3300; // undervoltage shutdown threshold
 // Panel support (opt-in list via PANEL_* build_flags in platformio.ini)
 // ***************************************************************************
 // Define any subset of these; ALL enabled drivers are compiled in and the
-// active panel is chosen at runtime (config.json "panel" > NVS > default). Only
-// the runtime-selected panel allocates its page buffer, so unused ones cost
-// flash but no RAM. See src/panels.h for the registry / colour models.
+// active panel is chosen at runtime (config.json "panel", mirrored to NVS, else
+// the default below). Only the runtime-selected panel allocates its page
+// buffer, so unused ones cost flash but no RAM. See src/panels.h for the
+// registry / colour models.
 //
 //   flag                   id "panel"         panel                        color_model
 //   PANEL_GDEW042Z15       GDEW042Z15         4.2"  400x300 b/w/red        bwr
@@ -93,9 +93,10 @@ static const int BATTERY_MIN_MV   = 3300; // undervoltage shutdown threshold
 #endif
 
 // Panel id used before config.json is available (first boot, pre-config error
-// screens). If unset, the first compiled-in panel is used. Best-effort: on a
-// device whose real panel differs, an early error screen may render on the
-// wrong geometry until config.json (or NVS) supplies the correct panel.
+// screens); also the "panel" default in config.schema.json. If unset, the first
+// compiled-in panel is used. Best-effort: on a device whose real panel differs,
+// an early error screen may render on the wrong geometry until config.json
+// supplies the correct panel.
 // #define EPAPER_DEFAULT_PANEL "GDEW075T7"
 
 // GxEPD2 page-buffer byte budget: the per-panel page height is derived from
@@ -106,40 +107,9 @@ static const int BATTERY_MIN_MV   = 3300; // undervoltage shutdown threshold
 #endif
 
 // ***************************************************************************
-// Runtime configuration (defaults; overridden by nice4iot config.json)
+// Runtime configuration
 // ***************************************************************************
-// config.json is fetched by arduino4iot from
-//   file/{project}/{device}/config.json
-// Recognised keys (all optional — the defaults below apply when absent):
-//
-//   "log_level"     int    arduino4iot log level (handled by the library)
-//   "sleep_s"       int    fallback deep-sleep duration (handled by library)
-//   "panel"         string panel id (see table above); persisted in NVS. The
-//                          nicepaper color_model is derived from it.
-//   "image_path"    string API path template for the rendered image
-//   "min_sleep_s"   int    lower clamp for the Cache-Control derived sleep
-//   "max_sleep_s"   int    upper clamp for the Cache-Control derived sleep
-//   "error_retry_s" int    deep-sleep interval after an error screen
-//   "rotation"      string GxEPD2 rotation: 0deg, 90deg, 180deg or 270deg
-//   "fw_check_s"    int    min seconds between OTA firmware checks (0 = every wake)
-//
-enum class Rotation : int
-{
-    Deg0 = 0,
-    Deg90 = 1,
-    Deg180 = 2,
-    Deg270 = 3,
-};
-
-struct AppConfig
-{
-    // API path to the nicepaper image. {project} and {device} are expanded by
-    // arduino4iot; nicepaper resolves {device} to a screen via aliases.json.
-    String imagePath = "ext/epaper/{project}/screens/{device}/image.png";
-    String panel     = "";            // "" = keep NVS/default panel
-    int    minSleep_s   = 300;        //  5 min
-    int    maxSleep_s   = 24 * 3600;  // 24 h
-    int    errorRetry_s = 900;        // 15 min retry after a failure/error screen
-    Rotation rotation   = Rotation::Deg0;
-    int    fwCheck_s    = 1 * 3600;  // min interval between OTA firmware checks
-};
+// The config.json keys (panel, rotation, image_path, min_sleep_s, max_sleep_s,
+// error_retry_s, fw_check_s) are declared with defaults, limits and
+// descriptions as IotConfigValue in main.cpp; arduino4iot publishes the
+// matching config.schema.json. See README 'Configuration'.
