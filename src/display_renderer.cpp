@@ -12,6 +12,10 @@
 #include "panels.h"
 
 #include <SPI.h>
+#include <driver/gpio.h>
+#include <esp_heap_caps.h>
+#include <esp_sleep.h>
+#include <esp_task_wdt.h>
 #include <limits.h>
 #include <math.h>
 #include <pngle.h>
@@ -40,18 +44,18 @@ void DisplayRenderer::applyPanel_(const char *id)
     s_palette = epdPalette(info->colorMode, &s_paletteCount);
 }
 
-void DisplayRenderer::setPanel(const String &id)
+bool DisplayRenderer::setPanel(const String &id)
 {
+    bool known = true;
     if (!id.isEmpty())
     {
-        if (epdPanelInfo(id.c_str()))
+        known = epdPanelInfo(id.c_str()) != nullptr;
+        if (known)
             applyPanel_(id.c_str());
-        else
-            log_w("unknown panel '%s' — keeping '%s'", id.c_str(),
-                  _panelId.isEmpty() ? "default" : _panelId.c_str());
     }
     if (_panelId.isEmpty()) // never resolved yet -> compiled-in default
         applyPanel_(epdDefaultPanelId());
+    return known;
 }
 
 // ***************************************************************************
@@ -59,11 +63,15 @@ void DisplayRenderer::setPanel(const String &id)
 //
 // The pixels are drawn straight onto the GxEPD2 page via drawPixel(), which
 // ignores pixels outside the current page band — so re-decoding per page and
-// letting GxEPD2 clip is all it takes for paged rendering. drawPixel is also
-// rotation-aware, so a rotated panel needs no special handling here.
+// letting GxEPD2 clip is all it takes for paged rendering. The image is drawn
+// unrotated (GxEPD2 rotation 0): image rows are native panel rows.
+// A PNG decodes top to bottom, so a page's decode stops once it has passed the
+// last image row that can land in that page (see pageStopRow()).
 // ***************************************************************************
 
-static bool s_drawEnabled = false; // false = validation pass (no drawing)
+static bool s_drawEnabled = false;      // false = validation pass (no drawing)
+static uint32_t s_stopRow = UINT32_MAX; // image rows >= this are not needed
+static bool s_stopped = false;          // decode passed s_stopRow
 
 static uint16_t nearestPalette(const PaletteEntry *pal, int n,
                                uint8_t r, uint8_t g, uint8_t b)
@@ -88,10 +96,15 @@ static uint16_t colorForPixel(uint8_t r, uint8_t g, uint8_t b, uint8_t a)
     return nearestPalette(s_palette, s_paletteCount, r, g, b);
 }
 
-static void onPngDraw(pngle_t *, uint32_t x, uint32_t y,
+static void onPngDraw(pngle_t *pngle, uint32_t x, uint32_t y,
                       uint32_t w, uint32_t h, uint8_t rgba[4])
 {
     if (!s_drawEnabled) return;
+    if (y >= s_stopRow && pngle_get_ihdr(pngle)->interlace == 0)
+    {
+        s_stopped = true; // rows arrive in order: nothing more for this page
+        return;
+    }
     uint16_t color = colorForPixel(rgba[0], rgba[1], rgba[2], rgba[3]);
     if (color == GxEPD_WHITE) return; // background already cleared to white
     for (uint32_t dy = 0; dy < h; dy++)
@@ -99,15 +112,23 @@ static void onPngDraw(pngle_t *, uint32_t x, uint32_t y,
             gx->drawPixel(x + dx, y + dy, color);
 }
 
-// Decode the whole PNG once. With draw=false it only validates (checks for a
-// decode error and a valid size); with draw=true it paints onto the current
-// GxEPD2 page. Fed in small chunks so the task watchdog stays fed.
+// Decode the PNG. With draw=false it only validates the whole image (checks
+// for a decode error and a valid size); with draw=true it paints onto the
+// current GxEPD2 page, stopping after image row stopRow - 1 (non-interlaced
+// PNGs only). Fed in small chunks so the task watchdog stays fed.
 static bool decodePng(const uint8_t *data, size_t len, bool draw,
-                      uint32_t *outW = nullptr, uint32_t *outH = nullptr)
+                      uint32_t *outW = nullptr, uint32_t *outH = nullptr,
+                      String *outError = nullptr, uint32_t stopRow = UINT32_MAX)
 {
     s_drawEnabled = draw;
+    s_stopRow = draw ? stopRow : UINT32_MAX;
+    s_stopped = false;
     pngle_t *pngle = pngle_new();
-    if (!pngle) return false;
+    if (!pngle)
+    {
+        if (outError) *outError = "Out of memory\nfor the PNG decoder.";
+        return false;
+    }
     pngle_set_draw_callback(pngle, onPngDraw);
 
     bool ok = true;
@@ -120,122 +141,258 @@ static bool decodePng(const uint8_t *data, size_t len, bool draw,
         if (used < 0)
         {
             log_e("pngle decode error: %s", pngle_error(pngle));
+            if (outError) *outError = String("PNG decode error:\n") + pngle_error(pngle);
             ok = false;
             break;
         }
         if (used == 0) break; // decoder reached the end of the stream
         fed += (size_t)used;
+        if (s_stopped) break; // rest of the image is outside this page
         yield(); // keep the watchdog happy on large images
     }
     uint32_t w = pngle_get_width(pngle), h = pngle_get_height(pngle);
-    if (ok && w == 0) ok = false;
+    if (ok && w == 0)
+    {
+        if (outError) *outError = "The received image\nis not a valid PNG.";
+        ok = false;
+    }
     pngle_destroy(pngle);
+    s_stopRow = UINT32_MAX;
     if (outW) *outW = w;
     if (outH) *outH = h;
     return ok;
 }
 
-// Trampoline so GxEPD2's C-style busy callback can invoke a std::function
-// exactly once during the refresh BUSY-wait. It also timestamps the first busy
-// wait, which marks the start of the physical panel refresh.
-static std::function<void()> s_duringRefresh;
-static bool s_duringRefreshDone = false;
-static uint32_t s_refreshStartMs = 0;
-static void busyTrampoline(const void *)
+// Parse only the PNG header (IHDR, the first few dozen bytes) for its size.
+static bool pngSize(const uint8_t *data, size_t len, uint32_t *w, uint32_t *h,
+                    String *outError)
 {
-    if (s_refreshStartMs == 0)
+    *w = *h = 0;
+    pngle_t *pngle = pngle_new();
+    if (!pngle)
     {
-        s_refreshStartMs = millis(); // first BUSY wait ~= refresh start
-        log_i("panel refresh: start");
+        *outError = "Out of memory\nfor the PNG decoder.";
+        return false;
     }
-    if (!s_duringRefreshDone && s_duringRefresh)
+    bool ok = true;
+    size_t fed = 0;
+    while (fed < len && pngle_get_width(pngle) == 0)
     {
-        s_duringRefreshDone = true; // set first: re-entrancy safe
-        s_duringRefresh();
+        size_t want = (len - fed < 64) ? (len - fed) : 64;
+        int used = pngle_feed(pngle, data + fed, want);
+        if (used < 0)
+        {
+            *outError = String("PNG decode error:\n") + pngle_error(pngle);
+            ok = false;
+            break;
+        }
+        if (used == 0) break;
+        fed += (size_t)used;
     }
+    *w = pngle_get_width(pngle);
+    *h = pngle_get_height(pngle);
+    pngle_destroy(pngle);
+    if (ok && *w == 0)
+    {
+        *outError = "The received image\nis not a valid PNG.";
+        ok = false;
+    }
+    return ok;
 }
 
-bool DisplayRenderer::renderImage(const uint8_t *png, size_t len,
-                                  const DisplayStatus &status,
-                                  const std::function<void()> &duringRefresh)
+// First image row that cannot land in page `page` (GxEPD2 pages are bands of
+// native rows, and the image is drawn unrotated).
+static uint32_t pageStopRow(int page)
 {
-    // The transient cost of decoding is pngle's state (~36 KB, embeds the 32 KB
-    // DEFLATE window). Bail out early on a clearly insufficient heap rather than
-    // crashing inside the decoder.
-    if (ESP.getFreeHeap() < 48 * 1024)
-    {
-        log_e("insufficient heap (%u B) to decode the PNG", (unsigned)ESP.getFreeHeap());
-        return false;
-    }
+    const uint32_t h = gx->epd2.HEIGHT, ph = gx->pageHeight();
+    return min((uint32_t)(page + 1) * ph, h);
+}
 
-    // Validate first (cheap) so a corrupt PNG never reaches the panel — with
-    // multi-page rendering earlier pages would already be committed otherwise.
-    // (Runs before any housekeeping, so an invalid PNG leaves WiFi untouched for
-    // the caller's error screen.)
+// ***************************************************************************
+// BUSY-wait: light sleep
+//
+// GxEPD2 calls the busy callback in place of its delay(1) on every poll of the
+// BUSY pin while the panel works (power on, refresh, power off). There is
+// nothing to do but wait (housekeeping and WiFi-off happen before rendering),
+// so the CPU light-sleeps until BUSY changes level (GPIO wakeup) or at most
+// NAP_MAX_US (timer wakeup, feeds the watchdog), instead of polling at full
+// clock. millis()/micros() run off esp_timer, which keeps counting across light
+// sleep, so the phase timings and GxEPD2's own busy timeout stay correct.
+//
+// The control pins must keep driving the panel while the CPU sleeps: their
+// sleep-mode pad configuration is disabled, so a pin that is switched to its
+// sleep configuration (input, floating) cannot glitch RST/CS mid-refresh.
+// EPAPER_REFRESH_LIGHTSLEEP=0 falls back to a plain delay(1).
+// ***************************************************************************
+
+#ifndef EPAPER_REFRESH_LIGHTSLEEP
+#define EPAPER_REFRESH_LIGHTSLEEP 1
+#endif
+static const uint64_t NAP_MAX_US = 1000000; // timer fallback, well below the watchdog
+
+// Feed the task watchdog if this task is subscribed (a reset otherwise logs
+// an error).
+static void feedWatchdog()
+{
+    if (esp_task_wdt_status(NULL) == ESP_OK)
+        esp_task_wdt_reset();
+}
+
+static void keepPinDuringSleep(int pin)
+{
+    if (pin >= 0)
+        gpio_sleep_sel_dis((gpio_num_t)pin);
+}
+
+// Light-sleep until BUSY leaves its current (busy) level or NAP_MAX_US pass.
+static void napWhileBusy()
+{
+    const gpio_num_t busy = (gpio_num_t)EPD_BUSY;
+    const bool busyHigh = digitalRead(EPD_BUSY) == HIGH; // GxEPD2 just saw it busy
+    gpio_wakeup_enable(busy, busyHigh ? GPIO_INTR_LOW_LEVEL : GPIO_INTR_HIGH_LEVEL);
+    esp_sleep_enable_gpio_wakeup();
+    esp_sleep_enable_timer_wakeup(NAP_MAX_US);
+    esp_light_sleep_start(); // a level trigger returns at once if BUSY already changed
+    esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
+    gpio_wakeup_disable(busy);
+}
+
+static void busyTrampoline(const void *)
+{
+#if EPAPER_REFRESH_LIGHTSLEEP
+    napWhileBusy();
+#else
+    delay(1);
+#endif
+    feedWatchdog();
+}
+
+// Route the panel's BUSY-waits through busyTrampoline (light sleep);
+// endBusyWaits() restores GxEPD2's plain polling.
+static void beginBusyWaits()
+{
+    gx->epd2.setBusyCallback(busyTrampoline);
+}
+
+static void endBusyWaits()
+{
+    gx->epd2.setBusyCallback(nullptr);
+}
+
+// One-line memory summary for the log: internal heap (free / largest block)
+// and PSRAM (size / free; 0 if none was found at boot).
+String memorySummary()
+{
+    char buf[128];
+    snprintf(buf, sizeof(buf),
+             "internal free %u B (largest %u B), psram %u B (free %u B)",
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
+             (unsigned)ESP.getPsramSize(), (unsigned)ESP.getFreePsram());
+    return String(buf);
+}
+
+bool DisplayRenderer::checkImage(const uint8_t *png, size_t len)
+{
+    // Header only (the full decode happens while rendering): a non-PNG and
+    // a wrong size are found before the caller turns WiFi off, so they are
+    // reported right away. A corrupt image body is only found while rendering.
     _renderErrorDetail = "";
     uint32_t imgW = 0, imgH = 0;
-    if (!decodePng(png, len, /*draw*/ false, &imgW, &imgH))
+    if (!pngSize(png, len, &imgW, &imgH, &_renderErrorDetail))
         return false;
 
-    // The image must exactly fill the panel canvas (post-rotation). GxEPD2 would
-    // otherwise silently clip/misplace a valid-but-wrong-sized PNG — garbage on
-    // the panel with no error. nicepaper renders the screen at the panel size, so
-    // a mismatch is a server-side size/orientation problem: surface it as an
-    // error screen rather than rendering nonsense.
+    // The image must exactly fill the panel. GxEPD2 would otherwise silently
+    // clip/misplace a valid-but-wrong-sized PNG — garbage on the panel with no
+    // error. nicepaper renders the screen at the panel size, so a mismatch is a
+    // server-side size problem or a wrong panel in config.json.
+    if (_panelId.isEmpty())
+        applyPanel_(epdDefaultPanelId());
     uint16_t panelW = 0, panelH = 0;
     if (const PanelInfo *pi = epdPanelInfo(_panelId.c_str()))
     {
         panelW = pi->width;
         panelH = pi->height;
-        if (_rotation & 1) { uint16_t t = panelW; panelW = panelH; panelH = t; }
     }
     if (panelW && (imgW != panelW || imgH != panelH))
     {
-        log_e("image %ux%u does not match panel '%s' %ux%u (rotation %d)",
+        log_e("image %ux%u does not match panel '%s' %ux%u",
               (unsigned)imgW, (unsigned)imgH, _panelId.c_str(),
-              (unsigned)panelW, (unsigned)panelH, _rotation);
+              (unsigned)panelW, (unsigned)panelH);
         _renderErrorDetail = String("Image is ") + imgW + "x" + imgH +
                              ",\npanel is " + panelW + "x" + panelH + ".";
         return false;
     }
+    return true;
+}
+
+bool DisplayRenderer::renderImage(const uint8_t *png, size_t len,
+                                  const DisplayStatus &status)
+{
+    _renderErrorDetail = "";
+    if (!checkImage(png, len))
+        return false;
 
     uint32_t renderStart = millis();
-    s_refreshStartMs = 0;
 
-    initPanel_(); // creates the panel driver
-    log_i("render '%s': free heap %u B, %d page(s) x %d rows",
-          _panelId.c_str(), (unsigned)ESP.getFreeHeap(),
-          gx->pages(), gx->pageHeight());
+    if (!initPanel_()) // creates the panel driver (page buffer)
+    {
+        _renderErrorDetail = "Not enough memory\nfor the display buffer.";
+        return false;
+    }
+    log_i("render '%s': %d page(s) x %d rows; %s", _panelId.c_str(),
+          gx->pages(), gx->pageHeight(), memorySummary().c_str());
 
+    // pngle's state (~36 KB incl. the 32 KB DEFLATE window) is allocated per
+    // decode; bail out on a clearly insufficient heap rather than failing
+    // halfway through the pages.
+    const size_t largest = heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
+    if (largest < 40 * 1024)
+    {
+        log_e("insufficient heap to decode the PNG: %s", memorySummary().c_str());
+        _renderErrorDetail = String("Not enough memory\nto decode the PNG (") +
+                             largest + " B free).";
+        return false;
+    }
 
-    // Overlap the slow physical refresh with the caller's housekeeping, and let
-    // the busy callback timestamp the refresh start for phase timing.
-    s_duringRefresh = duringRefresh;
-    s_duringRefreshDone = false;
-    gx->epd2.setBusyCallback(busyTrampoline);
+    beginBusyWaits();
 
+    // The refresh proper runs inside the last nextPage() (the first BUSY wait
+    // is the controller's power-on during the first page), so it is timed from
+    // the end of the last page's drawing. A decode error stops before that
+    // nextPage(): the panel is not refreshed, the caller shows an error screen.
+    uint32_t refreshStart = 0;
+    bool decodeOk = true;
+    int page = 0;
+    const int pages = gx->pages();
     gx->setFullWindow();
     gx->firstPage();
     do
     {
         gx->fillScreen(GxEPD_WHITE);
-        decodePng(png, len, /*draw*/ true); // re-decode into this page band
+        // re-decode into this page band, up to the last row it can contain
+        if (!decodePng(png, len, /*draw*/ true, nullptr, nullptr,
+                       &_renderErrorDetail, pageStopRow(page)))
+        {
+            decodeOk = false;
+            break; // no nextPage(): no refresh with a half-decoded image
+        }
         drawOverlay_(status);
+        if (++page >= pages && refreshStart == 0)
+        {
+            refreshStart = millis();
+            log_i("panel refresh: start");
+        }
     } while (gx->nextPage());
     gx->hibernate();
+    endBusyWaits();
+    if (!decodeOk)
+        return false;
 
-    gx->epd2.setBusyCallback(nullptr);
-    if (duringRefresh && !s_duringRefreshDone) // panel had no BUSY wait: run now
-    {
-        s_duringRefreshDone = true;
-        duringRefresh();
-    }
-    s_duringRefresh = nullptr;
-
-    // Phase timing: decode+transfer is everything up to the first BUSY wait; the
-    // refresh is from there until the wait returned.
+    // Phase timing: decode+transfer of all pages, then the refresh incl. power
+    // off and hibernate.
     uint32_t renderEnd = millis();
-    uint32_t refreshStart = s_refreshStartMs ? s_refreshStartMs : renderEnd;
+    if (refreshStart == 0) refreshStart = renderEnd;
     _lastDecodeTransferMs = refreshStart - renderStart;
     _lastRefreshMs = renderEnd - refreshStart;
     log_i("panel refresh: done in %u ms (decode+transfer %u ms)",
@@ -247,19 +404,22 @@ bool DisplayRenderer::renderImage(const uint8_t *png, size_t len,
 // Panel setup
 // ***************************************************************************
 
-void DisplayRenderer::initPanel_()
+bool DisplayRenderer::initPanel_()
 {
     // Resolve + create the panel driver on first use (heap; only the selected
-    // panel's page buffer is allocated).
+    // panel's page buffer is allocated, in PSRAM if available and large).
+    // _panelId is always a compiled-in id (applyPanel_ falls back), so a
+    // nullptr means the page buffer did not fit.
     if (_panelId.isEmpty())
         applyPanel_(epdDefaultPanelId());
     if (!gx)
     {
         gx = epdCreatePanel(_panelId.c_str());
-        if (!gx) // id not compiled in -> fall back to the default
+        if (!gx)
         {
-            applyPanel_(epdDefaultPanelId());
-            gx = epdCreatePanel(_panelId.c_str());
+            log_e("cannot allocate panel '%s' (page buffer): %s",
+                  _panelId.c_str(), memorySummary().c_str());
+            return false;
         }
     }
 
@@ -278,6 +438,18 @@ void DisplayRenderer::initPanel_()
     pinMode(EPD_DC, OUTPUT);
     pinMode(EPD_RST, OUTPUT);
 
+    // Keep the panel's pins in their normal configuration during light sleep
+    // (see napWhileBusy).
+    keepPinDuringSleep(EPD_CS);
+    keepPinDuringSleep(EPD_DC);
+    keepPinDuringSleep(EPD_RST);
+    keepPinDuringSleep(EPD_SCK);
+    keepPinDuringSleep(EPD_MOSI);
+    keepPinDuringSleep(EPD_BUSY);
+#ifdef EPD_ENABLE_PIN
+    keepPinDuringSleep(EPD_ENABLE_PIN);
+#endif
+
     // Remap the VSPI bus to the board's pins *before* init(): GxEPD2's init()
     // calls SPI.begin() internally, which early-returns once the bus is up, so
     // our pins are kept for the data transfers. (SPI.begin attaches SCK/MISO/
@@ -292,8 +464,9 @@ void DisplayRenderer::initPanel_()
     // through" from "the panel refreshed but nothing became visible".
     gx->init(/*serial_diag_bitrate*/ 115200, /*initial*/ true, /*reset_duration*/ 2,
              /*pulldown_rst_mode*/ false);
-    gx->setRotation(_rotation);
+    gx->setRotation(0);
     gx->setTextColor(GxEPD_BLACK);
+    return true;
 }
 
 // ***************************************************************************
@@ -312,6 +485,22 @@ void DisplayRenderer::drawOverlay_(const DisplayStatus &st)
 
     int wifiX = batX - 8 - 18; // 18px wide wifi block + gap
     drawWifi_(wifiX, y + 1, st);
+
+    // Timestamp + firmware version in the built-in 6x8 font, turned by 90°
+    // (GxEPD2 rotation 3 while printing), along the left edge.
+    String msg = st.timestamp + "  " + st.firmwareVersion;
+    msg.trim();
+    if (msg.length() > 0)
+    {
+        gx->setRotation(3);
+        gx->setTextSize(1);
+        int16_t bx, by;
+        uint16_t bw, bh;
+        gx->getTextBounds(msg, 0, 0, &bx, &by, &bw, &bh);
+        gx->setCursor(0, gx->height() - bh);
+        gx->print(msg);
+        gx->setRotation(0);
+    }
 }
 
 void DisplayRenderer::drawBattery_(int x, int y, const DisplayStatus &st)
@@ -499,7 +688,9 @@ static void drawNoWifiIcon(int cx, int cy, int size)
 void DisplayRenderer::showError(ErrorIcon icon, const String &title,
                                 const String &message, const DisplayStatus &status)
 {
-    initPanel_();
+    if (!initPanel_())
+        return; // no memory for the page buffer: nothing can be shown
+    beginBusyWaits(); // light-sleep through the refresh
     gx->setFullWindow();
     gx->firstPage();
     do
@@ -523,5 +714,6 @@ void DisplayRenderer::showError(ErrorIcon icon, const String &title,
 
         drawOverlay_(status);
     } while (gx->nextPage());
+    endBusyWaits();
     //gx->hibernate();
 }

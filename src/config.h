@@ -36,6 +36,7 @@ static const int EPD_BUSY = 4;
 
 // XIAO ESP32-S3's onboard user LED.
 static const int STATUS_LED_PIN = 21;
+static const bool STATUS_LED_ON = true;   // pin level that lights the LED
 
 // EE04's battery ADC (A0/GPIO1) sits behind an enable gate (A5/GPIO6) that
 // main.cpp drives HIGH at boot. Divider ratio assumed 2:1 (unconfirmed —
@@ -59,6 +60,7 @@ static const int EPD_BUSY = 25;  // BUSY
 
 // On-board status LED (ESP32-WROOM devkit style). Set to -1 if absent.
 static const int STATUS_LED_PIN = 2;
+static const bool STATUS_LED_ON = false;  // pin level that lights the LED
 
 // Battery voltage divider on ADC. The Waveshare driver board has no battery
 // input by default; these values assume an external 2:1 divider on GPIO34.
@@ -99,9 +101,11 @@ static const int BATTERY_MIN_MV   = 3300; // undervoltage shutdown threshold
 // supplies the correct panel.
 // #define EPAPER_DEFAULT_PANEL "GDEW075T7"
 
-// GxEPD2 page-buffer byte budget: the per-panel page height is derived from
-// this so every panel fits without PSRAM. Raise it for fewer PNG re-decodes
-// when the module has spare internal DRAM.
+// GxEPD2 page-buffer byte budget (set per board in platformio.ini): the
+// per-panel page height is derived from it, capped at the full frame. Each
+// page re-decodes the PNG up to its last row, so larger is faster. Rendering
+// runs with WiFi off, so the budget may use most of the free heap as long as
+// the PNG decoder (~36 KB) still fits; with PSRAM the full frame fits.
 #ifndef EPAPER_PAGE_BYTES
 #define EPAPER_PAGE_BYTES 16384
 #endif
@@ -109,7 +113,7 @@ static const int BATTERY_MIN_MV   = 3300; // undervoltage shutdown threshold
 // ***************************************************************************
 // Runtime configuration
 // ***************************************************************************
-// The config.json keys (panel, rotation, image_path, min_sleep_s, max_sleep_s,
-// error_retry_s, fw_check_s) are declared with defaults, limits and
+// The config.json keys (panel, image_path, min_sleep_s, max_sleep_s,
+// fw_check_s) are declared with defaults, limits and
 // descriptions as IotConfigValue in main.cpp; arduino4iot publishes the
 // matching config.schema.json. See README 'Runtime config'.

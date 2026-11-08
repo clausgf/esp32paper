@@ -13,6 +13,7 @@
 #pragma once
 
 #include <Arduino.h>
+#include <new>
 #include <string>
 #include "config.h"
 
@@ -92,7 +93,16 @@ static constexpr uint16_t epdPageRows(int rowBytes, int height)
 #  define EPW_ROW_GDEY075Z08(X)
 #endif
 #ifdef PANEL_GDEP073E01
-#  define EPW_ROW_GDEP073E01(X) X("GDEP073E01", GxEPD2_7C, GxEPD2_730c_GDEP073E01, 2, "e6", ColorMode::E6)
+// GxEPD2 hardcodes a 20 s BUSY timeout for this panel, but a full refresh takes
+// ~28 s on some panel variants and longer in the cold, so GxEPD2 gave up (and
+// powered off) mid-refresh. 45 s as in lmarzen/esp32-weather-epd#252.
+class GxEPD2_730c_GDEP073E01_45s : public GxEPD2_730c_GDEP073E01
+{
+public:
+    GxEPD2_730c_GDEP073E01_45s(int16_t cs, int16_t dc, int16_t rst, int16_t busy)
+        : GxEPD2_730c_GDEP073E01(cs, dc, rst, busy) { _busy_timeout = 45000000; } // us
+};
+#  define EPW_ROW_GDEP073E01(X) X("GDEP073E01", GxEPD2_7C, GxEPD2_730c_GDEP073E01_45s, 2, "e6", ColorMode::E6)
 #else
 #  define EPW_ROW_GDEP073E01(X)
 #endif
@@ -129,12 +139,14 @@ static const PanelInfo EPAPER_PANELS[] = { EPAPER_FOR_EACH_PANEL(EPD_PANEL_INFO)
 #undef EPD_PANEL_INFO
 static const size_t EPAPER_PANEL_COUNT = sizeof(EPAPER_PANELS) / sizeof(EPAPER_PANELS[0]);
 
-// Create a new display object for `id` (heap; nullptr if id is not compiled in).
+// Create a new display object for `id` (heap; nullptr if id is not compiled in
+// or the object with its page buffer does not fit).
 static GxEPD2_GFX *epdCreatePanel(const char *id)
 {
 #define EPD_PANEL_CREATE(pid, gfx, drv, rowdiv, cm, mode)                       \
     if (strcmp(id, pid) == 0)                                                   \
-        return new gfx<drv, epdPageRows(drv::WIDTH / (rowdiv), drv::HEIGHT)>(   \
+        return new (std::nothrow)                                               \
+            gfx<drv, epdPageRows(drv::WIDTH / (rowdiv), drv::HEIGHT)>(          \
             drv(EPD_CS, EPD_DC, EPD_RST, EPD_BUSY));
     EPAPER_FOR_EACH_PANEL(EPD_PANEL_CREATE)
 #undef EPD_PANEL_CREATE

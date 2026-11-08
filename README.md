@@ -32,9 +32,8 @@ flowchart LR
 ## How it works
 
 One wakeup cycle (`setup()` runs, then deep sleep). The order is tuned for
-energy — as little as possible on the *radio-on* critical path before the
-refresh, and everything else deferred so it overlaps the slow refresh with the
-WiFi radio switched off part-way through:
+energy — WiFi on as briefly as possible: network work first, then the radio
+off, then the CPU-only decode and the slow refresh with the CPU light-sleeping:
 
 1. **Connect** WiFi + NTP — `iot.begin()` with an `IotNtpClock`. arduino4iot
    caches the last-good BSSID + channel in RTC RAM for a **scan-free reconnect**
@@ -45,15 +44,21 @@ WiFi radio switched off part-way through:
 3. **Conditional GET** of the image (`If-None-Match` / `If-Modified-Since`,
    validators in RTC RAM), using the **NVS-mirrored config** —
    `api.getCached("ext/epaper/{project}/screens/{device}/image.png", …)`
-4. **Render** (paged, PNG re-decoded per page) + WiFi/battery overlay —
-   `displayRenderer.renderImage()`. While the panel refreshes (seconds), a
-   busy-callback runs the **housekeeping** — a throttled OTA check (`fw_check_s`),
-   a `config.json` refresh *for the next cycle*, the `config.schema.json`
-   publish (only when changed), telemetry — then `iot.radioOff()` flushes the
-   log and **switches WiFi off** before the refresh even finishes. For the remaining
-   multi-second BUSY-wait the CPU **light-sleeps** in ~20 ms slices (~0.8 mA
-   instead of busy-polling at full clock) until the panel signals done.
-5. **Deep sleep**, schedule-aligned — `iot.deepSleep()`
+4. **Check** the PNG header (is it a PNG, does its size match the panel) —
+   `displayRenderer.checkImage()`; a failure is logged and shown while WiFi is
+   still up.
+5. **Housekeeping** — a throttled OTA check (`fw_check_s`), a `config.json`
+   refresh *for the next cycle*, the `config.schema.json` publish (only when
+   changed), telemetry — then `iot.radioOff()` flushes the log and **switches
+   WiFi off**.
+6. **Render** + WiFi/battery overlay — `displayRenderer.renderImage()`, in one
+   pass when the page buffer holds the full frame (XIAO: PSRAM), else paged
+   (see [Memory & paging](#memory--paging)). Through the panel's BUSY-waits
+   (~28 s refresh on the 7.3" Spectra 6) the CPU **light-sleeps** until BUSY
+   changes level (GPIO wakeup, 1 s timer fallback that feeds the watchdog)
+   instead of busy-polling at full clock; `EPAPER_REFRESH_LIGHTSLEEP=0` turns
+   it off.
+7. **Deep sleep**, schedule-aligned — `iot.deepSleep()`
 
 The schedule lives on the server: nicepaper's `Cache-Control: max-age` from step
 3 sets the next sleep. Rather than sleeping `max-age` from *cycle end* (which
@@ -70,8 +75,10 @@ redraw; housekeeping runs directly and the radio goes off. Its `max-age` still
 sets the next sleep. The image validators are committed only after a successful
 render, so an image that failed to render is fetched again next cycle.
 
-Serious failures show a **full-screen error page** and retry after
-`error_retry_s`; the message matches the cause — no WiFi, no
+Serious failures show a **full-screen error page**. Before the server is
+reachable (no WiFi, provisioning) the device then panics into arduino4iot's
+escalating backoff (`panic_init_s`/`panic_factor`/`panic_max_s`); a missing or
+invalid image retries after a fixed 15 min. The message matches the cause — no WiFi, no
 server connection vs. provisioning rejected (classified from arduino4iot's typed
 `IotResult`), or a missing / invalid / wrong-sized image.
 
@@ -123,9 +130,13 @@ The `color_model` sent to nicepaper is derived from the panel.
 |------------------------|-------------------|------------------------------|---------------------------|-------------|
 | `PANEL_GDEW075T7`   | `GDEW075T7`   | 7.5" 800×480 b/w             | `GxEPD2_750_T7`           | `bw`        |
 | `PANEL_GDEY075Z08`  | `GDEY075Z08` | 7.5" 800×480 b/w/red         | `GxEPD2_750c_GDEY075Z08`  | `bwr`       |
-| `PANEL_GDEP073E01`   | `GDEP073E01`   | 7.3" 800×480 Spectra 6 (E6)  | `GxEPD2_730c_GDEP073E01`  | `e6`        |
+| `PANEL_GDEP073E01`   | `GDEP073E01`   | 7.3" 800×480 Spectra 6 (E6)  | `GxEPD2_730c_GDEP073E01`¹ | `e6`        |
 | `PANEL_ACEP730`   | `ACeP730` | 7.3" 800×480 ACeP 7-colour   | `GxEPD2_730c_ACeP_730`    | `c7`        |
 | `PANEL_GDEY073D46` | `GDEY073D46`   | 7.3" 800×480 ACeP 7-colour   | `GxEPD2_730c_GDEY073D46`  | `c7`        |
+
+¹ Subclassed in `src/panels.h` to raise GxEPD2's 20 s BUSY timeout to 45 s: a
+full refresh takes ~28 s on some panel variants and longer in the cold
+(cf. [lmarzen/esp32-weather-epd#252](https://github.com/lmarzen/esp32-weather-epd/pull/252)).
 
 Set the panel per device in nice4iot's `config.json` (`"panel": "GDEP073E01"`);
 arduino4iot mirrors it to NVS so later boots (and error screens, even without
@@ -166,6 +177,8 @@ mode. `settings.h.example` enables `IOT_TLS_CA_BUNDLE` → `IotTlsMode::Bundle`
 (verify against the built-in Mozilla root bundle; works for Let's Encrypt & other
 public CAs). Alternatives: `IOT_CA_CERT` → `CaPin` (pin a self-hosted/self-signed
 CA) or `IOT_TLS_INSECURE` → `Insecure` (encrypted but unverified — home lab).
+OTA needs `Bundle` or `CaPin`: with `Insecure` the prebuilt framework cannot
+download firmware, and arduino4iot skips the update with a logged reason.
 
 ### Firmware updates
 
@@ -209,10 +222,8 @@ The schema also lists the library's own keys (`battery_min_mv`, `panic_*`).
 | `sleep_s`      | int    | library default                                   | fallback sleep if no `max-age` |
 | `panel`        | string | `EPAPER_DEFAULT_PANEL` / first enabled panel      | panel id (see [Panels](#panels)), compiled-in ids only; derives `color_model` |
 | `image_path`   | string | `ext/epaper/{project}/screens/{device}/image.png` | image API path template |
-| `min_sleep_s`  | int    | `300`                                             | lower clamp on `max-age` sleep |
+| `min_sleep_s`  | int    | `60`                                              | lower clamp on `max-age` sleep |
 | `max_sleep_s`  | int    | `86400`                                           | upper clamp on `max-age` sleep |
-| `error_retry_s`| int    | `900`                                             | sleep after an error screen |
-| `rotation`     | string | `0deg`                                            | GxEPD2 rotation: `0deg`, `90deg`, `180deg`, `270deg` |
 | `fw_check_s`   | int    | `3600`                                            | min seconds between OTA checks (`0` = every wake) |
 
 Changing a key takes effect on the *next* cycle (config is refreshed in the
@@ -228,19 +239,25 @@ Everything flows through nice4iot:
   repo, derived at build time by a script arduino4iot ships (e.g. `0.11.0`, or
   `0.11.0-3-gabc123-dirty` past a tag), so it identifies the actual firmware with
   no code here; `firmware_sha256` is the app-image hash.
-- **App telemetry** (`kind = "epaper"`), sent in the refresh overlap. Live:
-  `connect_ms`, `net_ms`, `active_ms`, `image_status`, `image_bytes`,
-  `image_maxage_s`, `displayed`, `heap_free`, `sleep_s`, `panel` (active id),
+- **App telemetry** (`kind = "epaper"`), sent in the housekeeping. Live:
+  `boot_ms`, `connect_ms`, `provisioning_ms`, `config_ms`, `fetch_ms`, `image_status`, `image_bytes`,
+  `image_maxage_s`, `displayed`, `heap_free` (internal), `heap_max_block`
+  (largest internal block), `psram_free` (0 = no PSRAM), `sleep_s`, `panel` (active id),
   `supported_panels` (compiled-in panel ids). From the previous rendering cycle
   (arduino4iot's `IotRtcTelemetry` in RTC RAM, since they only complete after
   the refresh / WiFi-off): `last_cycle_ms`, `last_refresh_ms`,
-  `last_decode_transfer_ms`, `last_radio_on_ms` (WiFi-on window — the dominant
+  `last_decode_transfer_ms`, `last_display_ms` (decode + transfer + refresh),
+  `last_radio_on_ms` (WiFi-on window — the dominant
   energy metric). Together these let the phase durations be reconstructed
   without the serial log.
 - **Serial phase markers** — `panel refresh: start` / `… done in X ms`, `WiFi off
-  — radio on for X ms`, and an end-of-cycle `cycle phases [ms]: connect=… net=…
-  decode_transfer=… refresh=… radio_on=… active=…` summary.
-- **Logging** — buffered, flushed by `iot.radioOff()` in the overlap; lines
+  — radio on for X ms`, and an end-of-cycle `cycle phases [ms]: boot=… connect=…
+  provisioning=… config=… fetch=… decode_transfer=… refresh=… radio_on=… cycle=…`
+  summary. At boot (before the console can go silent after light sleep) the
+  previous cycle's values are printed as `previous cycle [ms]: last_cycle_ms=…`.
+  Memory (internal free/largest block, PSRAM size/free) is printed before and
+  after WiFi off and at render start.
+- **Logging** — buffered, flushed by `iot.radioOff()` after housekeeping; lines
   logged after WiFi off (or while offline) are kept in RTC RAM and sent with the
   next connected cycle, each cycle led by a marker with boot count and time.
   The buffer is raised to 6.5 KB (`IOT_RTC_LOG_SIZE` in `platformio.ini`),
@@ -248,31 +265,36 @@ Everything flows through nice4iot:
 
 ### Memory & paging
 
-Plain **ESP32-WROOM-32 (4 MB flash, no PSRAM)**, ~180 KB free heap. The
-refresh-time peak is the compressed PNG (`std::string`, ≤ ~40 KB) + pngle (~36 KB,
-embeds the 32 KB DEFLATE window) + the GxEPD2 **page buffer**. The uncompressed
-bitmap is never held whole: GxEPD2 renders in pages, the PNG re-decoded per page.
-Page height is derived at compile time from a byte budget (`EPAPER_PAGE_BYTES`,
-default 16 KB), so every panel is safe automatically:
+GxEPD2's page buffer is an instance member whose `page_height` is a
+compile-time template parameter, so its size is set per board at build time
+from a byte budget (`EPAPER_PAGE_BYTES` in `platformio.ini`, default 16 KB in
+`src/config.h`); the page height is derived from it and capped at the full
+frame. Each page re-decodes the PNG up to its last row, so with N pages a
+render costs about (N+1)/2 full decodes. Rendering runs after WiFi off, so the
+render peak is the compressed PNG + pngle (~36 KB, embeds the 32 KB DEFLATE
+window) + the page buffer, without TLS. Only the runtime-selected panel is
+`new`'d (`std::nothrow`: a buffer that does not fit is logged and reported as
+an image error instead of crashing).
 
-| Panel | full bitmap | bytes/row | pages @16 KB | page buffer | render peak¹ |
-|---|---|---|---|---|---|
-| 4.2" b/w 400×300 | 15 KB | 50 | 1 (full) | 15 KB | ~91 KB |
-| 7.5" b/w 800×480 | 48 KB | 100 | 4 | 16 KB | ~92 KB |
-| 7.5" b/w/red 800×480 | 96 KB (2 planes) | 200 | 6 | 16 KB | ~92 KB |
-| 7.3" Spectra 6 800×480 | 192 KB (4 bpp) | 400 | 12 | 16 KB | ~92 KB |
-| 7.3" ACeP 7c 800×480 | 192 KB (4 bpp) | 400 | 12 | 16 KB | ~92 KB |
+- **XIAO ESP32-S3 (8 MB PSRAM):** `EPAPER_PAGE_BYTES=1048576` — above any
+  panel's full frame, so one pass. Allocations above 4 KB may go to PSRAM
+  (`CONFIG_SPIRAM_USE_MALLOC`); measured on the 7.3" Spectra 6: the 192 KB
+  buffer lands in PSRAM, decode + transfer ~0.93 s (12 pages: ~7–8 s, before
+  the per-page decode stop ~11 s).
+- **Waveshare ESP32 (no PSRAM):** default 16 KB. Not measured on that board yet;
+  raise it as far as the free internal heap after WiFi off allows (pngle still
+  has to fit).
 
-¹ PNG + pngle + page buffer, comfortably under ~180 KB.
+| Panel | full bitmap | bytes/row | pages @16 KB |
+|---|---|---|---|
+| 4.2" b/w 400×300 | 15 KB | 50 | 1 (full) |
+| 7.5" b/w 800×480 | 48 KB | 100 | 4 |
+| 7.5" b/w/red 800×480 | 96 KB (2 planes) | 200 | 6 |
+| 7.3" Spectra 6 800×480 | 192 KB (4 bpp) | 400 | 12 |
+| 7.3" ACeP 7c 800×480 | 192 KB (4 bpp) | 400 | 12 |
 
-GxEPD2's page buffer is an instance member whose `page_height` is a compile-time
-template parameter (internal DRAM; PSRAM can't back it), so it can't be resized
-at runtime — hence the compile-time byte budget plus a runtime free-heap guard
-that refuses to decode below a safe threshold (and reports `heap_free` via
-telemetry). In the multi-panel build only the runtime-selected panel is `new`'d,
-so **only its buffer** uses RAM. Firmware size (this build, all five panels,
-`min_spiffs.csv` partitions): flash ~68 % of a 1.875 MB OTA slot, static RAM
-~15 % (the page buffer lives on the heap now, not `.bss`).
+Measured on the XIAO: WiFi off frees ~67 KB internal heap (218 → 285 KB free;
+largest block 151 KB either way).
 
 ## Design notes
 
@@ -301,32 +323,36 @@ so **only its buffer** uses RAM. Firmware size (this build, all five panels,
   ACeP c7). nicepaper already quantized to that palette, so the match is exact
   and there is no dithering. Palettes are panel data in `src/panels.h`.
 - **Client-side status overlay** — WiFi bars + battery gauge (live device state
-  the server can't know), drawn top-right over every image.
+  the server can't know), drawn top-right over every image, plus render
+  timestamp and firmware version in small rotated text along the left edge.
 - **Full-screen error pages** — icon + message (with `\n` paragraph breaks),
-  retry after `error_retry_s`, so a blank/frozen panel never hides a fault. The
+  then panic backoff or a 15 min retry, so a blank/frozen panel never hides a fault. The
   cause is classified from arduino4iot's typed `IotResult` — transport/TLS vs.
-  HTTP 403 vs. no-token vs. malformed body — so the screen is specific, not
+  HTTP 403 vs. no-token vs. no API URL vs. malformed body — so the screen is specific, not
   generic (no reachability guesswork). A valid PNG whose size ≠ the panel
-  (rotation-aware) is rejected too, with the got-vs-expected dimensions — else
+  is rejected too, with the got-vs-expected dimensions — else
   GxEPD2 would silently clip/misplace it and show garbage with no error.
 - **Energy** — as little as possible on the radio-on critical path: config is
   used from the NVS cache and refreshed in the background for the *next* cycle,
-  the OTA check is throttled (`fw_check_s`), and OTA/telemetry/logs overlap the
-  refresh via GxEPD2's busy callback (run-once, with a fallback) before WiFi
-  switches off. Once housekeeping is done and the radio is off, the CPU
-  **light-sleeps** through the rest of the multi-second refresh (the busy
-  callback naps in ~20 ms slices, ~0.8 mA vs. ~40 mA busy-polling) instead of
-  spinning on BUSY. A `304` (unchanged) runs housekeeping directly and switches
-  the radio off. Sleep is **schedule-aligned**
+  the OTA check is throttled (`fw_check_s`), and OTA/telemetry/logs run right
+  after the image fetch, then WiFi switches off — before decoding (CPU only)
+  and the refresh. Running housekeeping during the refresh instead would keep
+  WiFi connected through the decode, which costs more than the light sleep it
+  replaces. The CPU **light-sleeps** through the multi-second refresh (woken
+  by the BUSY pin, the panel pins keep their configuration during sleep)
+  instead of spinning on BUSY; error screens do the same. A `304` (unchanged)
+  runs housekeeping and switches the radio off. Sleep is **schedule-aligned**
   (`max-age − elapsed-since-fetch`) so wakeups don't drift late by the refresh.
   Scan-free WiFi reconnect + cached DHCP lease (`iot.wifi().setDhcpCache()`) come from
-  arduino4iot, skipping the scan and DHCP DORA each wake. Watchdog
-  widened to 90 s for the long refresh. Caveat: a real OTA *download* in that
-  window reboots mid-refresh (harmless, re-rendered next boot).
+  arduino4iot, skipping the scan and DHCP DORA each wake. The watchdog keeps
+  its default timeout: the BUSY-wait feeds it on every poll, housekeeping
+  between its steps (the OTA download feeds it itself). A real OTA update
+  reboots before rendering; the new firmware renders on its first boot.
 - **End-of-cycle timings buffered in RTC RAM** — `refresh_ms`/
   `decode_transfer_ms`/`cycle_ms` complete only after the refresh, so they ship
   next cycle as `last_*` instead of keeping WiFi on; the refresh start is
-  timestamped from GxEPD2's first busy-callback.
+  timestamped after the last page is drawn (the first BUSY-wait is the
+  controller power-on during page 1).
 - **Opt-in panel list** (`PANEL_*`), **pioarduino platform**
   (arduino4iot needs arduino-esp32 3.x), **deep-sleep-first** (`loop()` unused;
   battery undervoltage → `iot.panic()`).
@@ -342,7 +368,7 @@ and BUSY handling — effectively a driver library.
 
 | approach | effort | what it buys |
 |---|---|---|
-| **A. Today** — GxEPD2 owns buffer + GFX + driver, paged, PNG re-decoded per page | none | works now; cost is N re-decodes and no runtime-variable banding |
+| **A. Today** — GxEPD2 owns buffer + GFX + driver; one pass with PSRAM, else paged | none | works now; without PSRAM ~(N+1)/2 decodes and banding fixed per build |
 | **B.** Own `Adafruit_GFX` buffer (overlay/text still work), GxEPD2 as low-level driver (`writeImage`/`writeNative`/`refresh`/BUSY) | ~1–2 days + per-panel HW bring-up | decode **once**; choose band height **at runtime** from free heap. Needs per-format native packing (1 bpp / 2 planes / 4 bpp) |
 | **C.** Replace GxEPD2 | days–weeks per panel + waveform/ghosting debugging | nothing here |
 
@@ -362,10 +388,10 @@ isn't worth it.
 - [ ] **First-boot geometry (multi-panel).** Before `config.json` was fetched
       once, an error screen renders on the compile-time default geometry
       (best effort) — wrong on a non-default device until config runs once.
-- [ ] **Verify the refresh/housekeeping overlap on hardware.** Busy-callback
-      timing, the light-sleep BUSY-wait sampling the panel correctly, WiFi-off
-      mid-refresh not disturbing the panel, and the 90 s watchdog — confirm on a
-      real (esp. 7-colour) device; measure the refresh-phase and sleep current.
+- [ ] **Measure the energy on hardware.** WiFi-off before rendering and the
+      light-sleep BUSY-wait work on the XIAO ESP32-S3 + 7.3" Spectra 6; the
+      refresh-phase and sleep currents are not measured yet. During light sleep
+      the native USB console stops until the next reset (dev builds).
 - [ ] **Per-wake TLS handshake** still dominates the (already lean) unchanged-image
       wake. Tracked upstream as arduino4iot#3 (TLS session resumption across deep
       sleep, ~2 s) — not yet released. DHCP is already skipped (arduino4iot#4 →
@@ -373,16 +399,18 @@ isn't worth it.
 - [ ] **Confirm the extension endpoint accepts the device bearer token.** If
       nice4iot gates it only via per-project activation / `X-Api-Key` instead,
       switch to `iot.forward.getCached()` — `image_path` is configurable.
-- [ ] **Re-decode CPU vs. RAM.** Paged rendering re-decodes per page (+1 to
-      validate); raise `EPAPER_PAGE_BYTES` for fewer pages when DRAM allows.
+- [ ] **Page budget for the Waveshare ESP32.** Measure the free internal heap
+      after WiFi off there and raise `EPAPER_PAGE_BYTES` for its env.
+- [ ] **Long refresh on the first cycle after flashing.** Seen 3× (refresh
+      ~46–47 s, i.e. the 45 s BUSY timeout), not on other first cycles; cause
+      unknown.
 - [ ] **Battery curve is approximate** (resting-voltage table; sags under load).
       The board has no battery input by default — `BATTERY_*` assumes a 2:1
       divider on GPIO34; set `BATTERY_PIN = -1` if unused.
 - [ ] **Overlay vs. server indicators** — nicepaper may draw its own; make the
       overlay config-toggleable or use a reserved corner.
-- [ ] **Error path not energy-optimised** — error refreshes keep WiFi on (to
-      flush the error log). Consider suppressing repeat redraws (track last error
-      in RTC RAM) and backing off the retry interval.
+- [ ] **Repeated error screens** — each retry redraws the same error page;
+      consider suppressing repeat redraws (track the last error in RTC RAM).
 - [ ] **Localisation** — only two error icons; English strings are hardcoded.
 - [ ] **Partial refresh** — always full-window; partial updates could cut
       refresh time/power for small changes.

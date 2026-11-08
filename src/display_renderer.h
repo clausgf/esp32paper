@@ -27,6 +27,8 @@ struct DisplayStatus
     bool batteryValid  = false;
     int  battery_mV    = 0;
     int  batteryPct    = -1;  // 0..100, -1 = unknown
+    String firmwareVersion;   // small rotated footer, with the timestamp
+    String timestamp;         // when this frame was rendered
 };
 
 // Icon shown on a full-screen error page.
@@ -43,10 +45,8 @@ public:
     // the driver is created lazily on the first draw. An unknown/empty id keeps
     // the previous choice, falling back to the compiled-in default. Must be set
     // before the driver is created (i.e. before the first render/error screen).
-    void setPanel(const String &id);
-
-    // Panel rotation (GxEPD2 0..3), applied on the next draw.
-    void setRotation(int rotation) { _rotation = rotation; }
+    // Returns false if a non-empty id is not compiled in.
+    bool setPanel(const String &id);
 
     // nicepaper color_model of the active panel (bw/bwr/e6/c7).
     String colorModel() const { return _colorModel; }
@@ -54,20 +54,22 @@ public:
     String activePanel() const { return _panelId; }
     String supportedPanels() const;
 
-    // Decode the in-memory PNG and refresh the panel (paged), adding the
-    // status overlay. Returns false if the PNG is invalid or its size does not
-    // match the panel (panel untouched); renderErrorDetail() then explains why.
-    //
-    // The e-paper refresh is slow (seconds) and mostly a BUSY-wait with the CPU
-    // idle. `duringRefresh`, if given, is run exactly once during that wait
-    // (via GxEPD2's busy callback) so housekeeping/network exchange overlaps the
-    // refresh and WiFi can be shut down without adding wall-clock time. If the
-    // callback never fires (e.g. no BUSY pin) it is still invoked once before
-    // returning. It only runs when rendering actually proceeds (valid PNG).
-    bool renderImage(const uint8_t *png, size_t len, const DisplayStatus &status,
-                     const std::function<void()> &duringRefresh = {});
+    // Cheap pre-check from the PNG header only: is it a PNG, and does its
+    // size match the active panel? On false, renderErrorDetail() explains why.
+    bool checkImage(const uint8_t *png, size_t len);
 
-    // Full-screen error page (icon + title + word-wrapped message).
+    // Decode the in-memory PNG and refresh the panel (paged, or in one pass if
+    // EPAPER_PAGE_BYTES holds the full frame), adding the status overlay.
+    // Returns false (renderErrorDetail() explains why) if checkImage() fails,
+    // the page buffer or the decoder does not fit in memory, or the PNG body
+    // is corrupt; the panel is then not refreshed. The CPU light-sleeps
+    // through the panel's BUSY-waits (see EPAPER_REFRESH_LIGHTSLEEP), so the
+    // caller turns WiFi off before.
+    bool renderImage(const uint8_t *png, size_t len, const DisplayStatus &status);
+
+    // Full-screen error page (icon + title + word-wrapped message). The CPU
+    // light-sleeps through the refresh, like renderImage(). Shows nothing if
+    // the page buffer cannot be allocated.
     void showError(ErrorIcon icon, const String &title, const String &message,
                    const DisplayStatus &status);
 
@@ -76,24 +78,22 @@ public:
 
     // Phase durations of the last renderImage(), in ms:
     //  - decode + transfer of all pages into panel controller memory,
-    //  - the physical panel refresh (the BUSY-wait), measured from the first
-    //    busy callback until the refresh returns.
+    //  - the physical panel refresh incl. power-off, measured from the end of
+    //    the last page's drawing until the refresh returns.
     uint32_t lastDecodeTransferMs() const { return _lastDecodeTransferMs; }
     uint32_t lastRefreshMs() const { return _lastRefreshMs; }
 
-    // When renderImage() returned false, an optional extra line describing why:
-    // empty means "not a valid PNG"; non-empty is a specific reason (e.g. the
-    // decoded image does not match the panel size). For the caller's error screen.
+    // When checkImage()/renderImage() returned false, why (for the caller's log
+    // and error screen): out of memory, a PNG decode error or a size mismatch.
     const String &renderErrorDetail() const { return _renderErrorDetail; }
 
 private:
-    void initPanel_();                           // create driver + SPI + init
+    bool initPanel_();                           // create driver + SPI + init
     void applyPanel_(const char *id);            // set id/colorModel/colorMode
     void drawOverlay_(const DisplayStatus &st);  // WiFi + battery, top-right
     void drawBattery_(int x, int y, const DisplayStatus &st);
     void drawWifi_(int x, int y, const DisplayStatus &st);
 
-    int _rotation = 0;
     String _panelId;                 // active panel id ("" until resolved)
     String _colorModel = "bw";       // nicepaper color_model of the active panel
     String _renderErrorDetail;       // reason detail when the last render failed
@@ -102,3 +102,6 @@ private:
 };
 
 extern DisplayRenderer displayRenderer;
+
+// One-line memory summary (internal heap free/largest block, PSRAM size/free).
+String memorySummary();
