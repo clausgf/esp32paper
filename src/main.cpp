@@ -99,6 +99,18 @@ static IotConfigValue<int32_t> cvFwCheck(config, 3600, "fw_check_s",
       .description = "Minimum time between two checks for firmware updates in seconds (0 = every wake).",
       .min = 0 });
 
+// Row layout of nice4iot's config form (fields not listed get a row of their
+// own). Includes the library's keys, which the published schema lists too.
+static const char *kSchemaExtras = R"json({"x-ui": {"layout": [
+    ["panel", "rotation"],
+    ["image_path"],
+    ["min_sleep_s", "max_sleep_s"],
+    ["error_retry_s", "fw_check_s"],
+    ["sleep_s", "log_level"],
+    ["battery_min_mv"],
+    ["panic_init_s", "panic_factor", "panic_max_s"]
+]}})json";
+
 // GxEPD2 rotation index for the (enum-validated) "rotation" value.
 static int rotationIndex(const std::string &rotation)
 {
@@ -192,7 +204,7 @@ static DisplayStatus buildStatus()
     st.rssi = st.wifiConnected ? iot.network().rssi() : 0;
     if (BATTERY_PIN >= 0)
     {
-        st.battery_mV = iot.getBatteryVoltage_mV();
+        st.battery_mV = iot.battery_mV();
         st.batteryValid = st.battery_mV > 0;
         st.batteryPct = st.batteryValid ? batteryPercent(st.battery_mV) : -1;
     }
@@ -346,12 +358,12 @@ void setup()
                        ".\n\nCheck the token and device approval.");
     }
 
-    // --- config: if config.json was mirrored to NVS before (stored ETag or
-    //     Last-Modified), use the mirror for this cycle and refresh config.json
+    // --- config: if config.json was mirrored to NVS before, use the mirror
+    //     for this cycle and refresh config.json
     //     in the background (housekeeping) for the NEXT cycle. Otherwise (fresh
     //     flash / erased NVS) fetch it now so the first render already uses the
     //     configured panel/rotation.
-    bool haveCachedConfig = !config.etag().empty() || !config.lastModified().empty();
+    bool haveCachedConfig = config.isMirrored();
     if (!haveCachedConfig)
     {
         config.updateConfig();
@@ -412,6 +424,7 @@ void setup()
         if (haveCachedConfig)
             config.updateConfig();
         // Publishes config.schema.json only when it changed (hash kept in NVS).
+        config.setSchemaExtras(kSchemaExtras);
         config.publishSchema();
         iot.telemetry.postSystem();
         IotTelemetry t;
@@ -424,7 +437,7 @@ void setup()
         t.add("image_maxage_s", (int)img.maxAge_s);
         t.add("displayed", displayed ? 1 : 0);
         t.add("heap_free", (int)ESP.getFreeHeap());
-        t.add("sleep_s", sleep_s > 0 ? sleep_s : iot.getLastSleepDuration_s());
+        t.add("sleep_s", sleep_s > 0 ? sleep_s : iot.lastSleepDuration_s());
         t.add("panel", displayRenderer.activePanel());        // active panel id
         t.add("supported_panels", displayRenderer.supportedPanels());   // compiled-in panels
         // Previous cycle's end-of-cycle phases, buffered in RTC RAM (see below),

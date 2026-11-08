@@ -200,8 +200,8 @@ Served by nice4iot at `file/{project}/{device}/config.json`; all keys optional.
 The keys are declared with defaults, limits and descriptions as `IotConfigValue`
 in `src/main.cpp`; arduino4iot clamps / rejects out-of-range values and
 publishes a matching `config.schema.json` (once per changed schema) for
-nice4iot's config form. The schema also lists the library's own keys
-(`battery_min_mv`, `panic_*`).
+nice4iot's config form, with an `x-ui` row layout (`config.setSchemaExtras()`).
+The schema also lists the library's own keys (`battery_min_mv`, `panic_*`).
 
 | key            | type   | default                                           | meaning |
 |----------------|--------|---------------------------------------------------|---------|

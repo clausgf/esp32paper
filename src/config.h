@@ -112,4 +112,4 @@ static const int BATTERY_MIN_MV   = 3300; // undervoltage shutdown threshold
 // The config.json keys (panel, rotation, image_path, min_sleep_s, max_sleep_s,
 // error_retry_s, fw_check_s) are declared with defaults, limits and
 // descriptions as IotConfigValue in main.cpp; arduino4iot publishes the
-// matching config.schema.json. See README 'Configuration'.
+// matching config.schema.json. See README 'Runtime config'.
