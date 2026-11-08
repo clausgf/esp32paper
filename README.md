@@ -200,7 +200,7 @@ Served by nice4iot at `file/{project}/{device}/config.json`; all keys optional.
 The keys are declared with defaults, limits and descriptions as `IotConfigValue`
 in `src/main.cpp`; arduino4iot clamps / rejects out-of-range values and
 publishes a matching `config.schema.json` (once per changed schema) for
-nice4iot's config form, with an `x-ui` row layout (`config.setSchemaExtras()`).
+nice4iot's config form, with an `x-ui` row layout (`config.setLayout()`).
 The schema also lists the library's own keys (`battery_min_mv`, `panic_*`).
 
 | key            | type   | default                                           | meaning |
@@ -242,8 +242,9 @@ Everything flows through nice4iot:
   decode_transfer=… refresh=… radio_on=… active=…` summary.
 - **Logging** — buffered, flushed by `iot.radioOff()` in the overlap; lines
   logged after WiFi off (or while offline) are kept in RTC RAM and sent with the
-  next connected cycle. The buffer is raised to 4 KB (`IOT_RTC_LOG_SIZE` in
-  `platformio.ini`), about 15 wakes without WiFi.
+  next connected cycle, each cycle led by a marker with boot count and time.
+  The buffer is raised to 6.5 KB (`IOT_RTC_LOG_SIZE` in `platformio.ini`),
+  about 20 wakes without WiFi.
 
 ### Memory & paging
 

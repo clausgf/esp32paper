@@ -99,30 +99,6 @@ static IotConfigValue<int32_t> cvFwCheck(config, 3600, "fw_check_s",
       .description = "Minimum time between two checks for firmware updates in seconds (0 = every wake).",
       .min = 0 });
 
-// Row layout of nice4iot's config form (fields not listed get a row of their
-// own). Includes the library's keys, which the published schema lists too;
-// built from the key constants so a renamed key cannot go stale here.
-static std::string schemaExtras()
-{
-    using namespace iot_config_keys;
-    auto row = [](std::initializer_list<const char *> keys)
-    {
-        std::string s = "[";
-        for (const char *k : keys)
-            s += std::string(s.size() > 1 ? ", \"" : "\"") + k + "\"";
-        return s + "]";
-    };
-    return std::string(R"({"x-ui": {"layout": [)") +
-           row({cvPanel.key(), cvRotation.key()}) + ", " +
-           row({cvImagePath.key()}) + ", " +
-           row({cvMinSleep.key(), cvMaxSleep.key()}) + ", " +
-           row({cvErrorRetry.key(), cvFwCheck.key()}) + ", " +
-           row({SLEEP, LOG_LEVEL}) + ", " +
-           row({BATTERY_MIN}) + ", " +
-           row({PANIC_INIT, PANIC_FACTOR, PANIC_MAX}) + "]}}";
-}
-static const std::string kSchemaExtras = schemaExtras();
-
 // GxEPD2 rotation index for the (enum-validated) "rotation" value.
 static int rotationIndex(const std::string &rotation)
 {
@@ -152,6 +128,27 @@ struct AppRtcState
     IotRtcTelemetry<4> next;
 };
 static RTC_NOINIT_ATTR IotRtcSlot<AppRtcState> rtc;
+
+#ifdef DEV_NO_DEEP_SLEEP
+// Development only (env seeed_xiao_esp32s3_dev): deep sleep takes the native
+// USB console down, so wait instead (capped to DEV_NO_DEEP_SLEEP seconds) and
+// restart. RTC_NOINIT state survives the software reset like a deep-sleep
+// wakeup, and a software reset does not count as an abnormal start.
+class DevPower : public IotEspPower
+{
+public:
+    void deepSleep(int32_t duration_s) override
+    {
+        const int32_t wait_s = duration_s < DEV_NO_DEEP_SLEEP ? duration_s : DEV_NO_DEEP_SLEEP;
+        Serial.printf("[dev] deep sleep %ld s -> wait %ld s + restart\n",
+                      (long)duration_s, (long)wait_s);
+        Serial.flush();
+        iot.stopWatchdog();
+        delay((uint32_t)wait_s * 1000);
+        restart();
+    }
+};
+#endif
 
 // ***************************************************************************
 // Helpers
@@ -227,10 +224,7 @@ static int alignedSleep_s(int maxAge, unsigned long sinceFetchMs,
                                      const String &message)
 {
     displayRenderer.showError(icon, title, message, buildStatus());
-    String flat = message; // one log line: the screen's paragraph breaks become spaces
-    flat.replace("\n\n", " ");
-    flat.replace('\n', ' ');
-    logger.error(LOG_TAG, "%s — %s", title.c_str(), flat.c_str());
+    logger.error(LOG_TAG, "%s — %s", title.c_str(), message.c_str()); // logger joins lines
     iot.deepSleep(cvErrorRetry);
     while (true) {} // never reached
 }
@@ -241,6 +235,12 @@ void setup()
 {
     unsigned long tBoot = millis();
     Serial.begin(115200);
+
+    // Row layout of nice4iot's config form; the library appends its own rows.
+    config.setLayout({ { cvPanel, cvRotation },
+                       { cvImagePath },
+                       { cvMinSleep, cvMaxSleep },
+                       { cvErrorRetry, cvFwCheck } });
 
     // --- seed the deployment bootstrap config into NVS (once) ---
     // From build -D defines / settings.h - empty values for seecretless build.
@@ -263,6 +263,11 @@ void setup()
 #endif
         iot.seedCredentials(seed);
     }
+
+#ifdef DEV_NO_DEEP_SLEEP
+    static DevPower devPower;
+    iot.setPower(devPower);
+#endif
 
     // --- status LED (on while the radio is on) ---
     if (STATUS_LED_PIN >= 0)
@@ -388,8 +393,12 @@ void setup()
         // changes far more often than the firmware. lastFwCheckEpoch == 0 (cold
         // boot, RTC state lost) forces a check.
         int64_t now = (int64_t)time(nullptr);
+#ifdef DEV_NO_OTA
+        if (false) // development build: keep the serially flashed firmware
+#else
         if (cvFwCheck <= 0 || rtc->lastFwCheckEpoch == 0 ||
             (now - rtc->lastFwCheckEpoch) >= cvFwCheck)
+#endif
         {
             rtc->lastFwCheckEpoch = now;
             // One image per board (release asset naming, see build.yml);
@@ -403,7 +412,6 @@ void setup()
         if (haveCachedConfig)
             config.updateConfig();
         // Publishes config.schema.json only when it changed (hash kept in NVS).
-        config.setSchemaExtras(kSchemaExtras.c_str());
         config.publishSchema();
         iot.telemetry.postSystem();
         IotTelemetry t;
