@@ -100,16 +100,28 @@ static IotConfigValue<int32_t> cvFwCheck(config, 3600, "fw_check_s",
       .min = 0 });
 
 // Row layout of nice4iot's config form (fields not listed get a row of their
-// own). Includes the library's keys, which the published schema lists too.
-static const char *kSchemaExtras = R"json({"x-ui": {"layout": [
-    ["panel", "rotation"],
-    ["image_path"],
-    ["min_sleep_s", "max_sleep_s"],
-    ["error_retry_s", "fw_check_s"],
-    ["sleep_s", "log_level"],
-    ["battery_min_mv"],
-    ["panic_init_s", "panic_factor", "panic_max_s"]
-]}})json";
+// own). Includes the library's keys, which the published schema lists too;
+// built from the key constants so a renamed key cannot go stale here.
+static std::string schemaExtras()
+{
+    using namespace iot_config_keys;
+    auto row = [](std::initializer_list<const char *> keys)
+    {
+        std::string s = "[";
+        for (const char *k : keys)
+            s += std::string(s.size() > 1 ? ", \"" : "\"") + k + "\"";
+        return s + "]";
+    };
+    return std::string(R"({"x-ui": {"layout": [)") +
+           row({cvPanel.key(), cvRotation.key()}) + ", " +
+           row({cvImagePath.key()}) + ", " +
+           row({cvMinSleep.key(), cvMaxSleep.key()}) + ", " +
+           row({cvErrorRetry.key(), cvFwCheck.key()}) + ", " +
+           row({SLEEP, LOG_LEVEL}) + ", " +
+           row({BATTERY_MIN}) + ", " +
+           row({PANIC_INIT, PANIC_FACTOR, PANIC_MAX}) + "]}}";
+}
+static const std::string kSchemaExtras = schemaExtras();
 
 // GxEPD2 rotation index for the (enum-validated) "rotation" value.
 static int rotationIndex(const std::string &rotation)
@@ -128,48 +140,18 @@ struct AppRtcState
 {
     // Validators of the image currently on the panel, committed only after it
     // was rendered, so a failed render is fetched again instead of 304'd.
-    char    imageEtag[96];
-    char    imageLastModified[40];
+    IotRtcValidators<> image;
 
     // Wall-clock time of the last OTA firmware check. The display refreshes far
     // more often than the firmware changes, so the check (a full HTTP
     // round-trip) is throttled to fw_check_s; 0 forces a check.
     int64_t lastFwCheckEpoch;
 
-    // Phase durations that are only known at the very end of a cycle (after the
-    // refresh) are buffered here and reported as `last_*` in the NEXT cycle's
-    // telemetry, so the device can sleep immediately instead of staying awake
-    // with WiFi on just to send them.
-    bool    hasLast;            // last_* below not yet reported
-    int32_t cycle_ms;           // total awake time of the previous cycle
-    int32_t refresh_ms;         // previous physical panel refresh
-    int32_t decode_transfer_ms; // previous PNG decode + transfer to panel RAM
-    int32_t radio_on_ms;        // previous cycle's WiFi-on window (boot -> WiFi off)
-    int32_t deferred_cycles;    // 304 wakes since the last telemetry POST
+    // Phase durations only known at the very end of a cycle (after the refresh,
+    // radio off), posted with the NEXT cycle's telemetry as last_<key>.
+    IotRtcTelemetry<4> next;
 };
 static RTC_NOINIT_ATTR IotRtcSlot<AppRtcState> rtc;
-
-// Copy a validator into its RTC field; one that does not fit is dropped, which
-// only makes the next GET unconditional.
-template <size_t N>
-static void storeValidator(char (&dst)[N], const std::string &value)
-{
-    if (value.size() < N)
-        memcpy(dst, value.c_str(), value.size() + 1);
-    else
-        dst[0] = '\0';
-}
-
-static IotCacheValidators imageValidators()
-{
-    return { rtc->imageEtag, rtc->imageLastModified };
-}
-
-static void commitImageValidators(const IotCacheValidators &v)
-{
-    storeValidator(rtc->imageEtag, v.etag);
-    storeValidator(rtc->imageLastModified, v.lastModified);
-}
 
 // ***************************************************************************
 // Helpers
@@ -211,12 +193,6 @@ static DisplayStatus buildStatus()
     return st;
 }
 
-// HTTP status, or the (negative) transport error, for logs and telemetry.
-static int statusCode(const IotResult &r)
-{
-    return r.isTransportError() ? r.transportError : r.httpStatus;
-}
-
 // Schedule-aligned sleep duration.
 //
 // nicepaper's Cache-Control max-age counts from when the server generated the
@@ -251,7 +227,10 @@ static int alignedSleep_s(int maxAge, unsigned long sinceFetchMs,
                                      const String &message)
 {
     displayRenderer.showError(icon, title, message, buildStatus());
-    logger.error(LOG_TAG, "%s — %s", title.c_str(), message.c_str());
+    String flat = message; // one log line: the screen's paragraph breaks become spaces
+    flat.replace("\n\n", " ");
+    flat.replace('\n', ' ');
+    logger.error(LOG_TAG, "%s — %s", title.c_str(), flat.c_str());
     iot.deepSleep(cvErrorRetry);
     while (true) {} // never reached
 }
@@ -376,11 +355,11 @@ void setup()
 
     // --- conditional GET of the image (ETag / Last-Modified from RTC) ---
     unsigned long t0 = millis();
-    IotCachedResponse img = api.getCached(cvImagePath.get(), imageValidators(),
+    IotCachedResponse img = api.getCached(cvImagePath.get(), rtc->image.load(),
                                           { .headers = { { "Accept", "image/png" } } });
     unsigned long net_ms = millis() - (tBoot + connect_ms); // provision + image GET
     logger.info(LOG_TAG, "image GET %s -> %d (%u bytes, max-age=%d)",
-                cvImagePath.get().c_str(), statusCode(img.result),
+                cvImagePath.get().c_str(), img.result.code(),
                 (unsigned)img.body.size(), (int)img.maxAge_s);
 
     // Decide the sleep duration now so deep sleep after the refresh is immediate.
@@ -424,7 +403,7 @@ void setup()
         if (haveCachedConfig)
             config.updateConfig();
         // Publishes config.schema.json only when it changed (hash kept in NVS).
-        config.setSchemaExtras(kSchemaExtras);
+        config.setSchemaExtras(kSchemaExtras.c_str());
         config.publishSchema();
         iot.telemetry.postSystem();
         IotTelemetry t;
@@ -432,7 +411,7 @@ void setup()
         t.add("connect_ms", (int)connect_ms);       // WiFi connect + NTP
         t.add("net_ms", (int)net_ms);               // provision + image GET (config deferred)
         t.add("active_ms", (int)(millis() - t0));   // awake since fetch, to WiFi-off
-        t.add("image_status", statusCode(img.result));
+        t.add("image_status", img.result.code());
         t.add("image_bytes", (int)img.body.size());
         t.add("image_maxage_s", (int)img.maxAge_s);
         t.add("displayed", displayed ? 1 : 0);
@@ -440,19 +419,8 @@ void setup()
         t.add("sleep_s", sleep_s > 0 ? sleep_s : iot.lastSleepDuration_s());
         t.add("panel", displayRenderer.activePanel());        // active panel id
         t.add("supported_panels", displayRenderer.supportedPanels());   // compiled-in panels
-        // Previous cycle's end-of-cycle phases, buffered in RTC RAM (see below),
-        // plus the 304 wakes counted since the last POST.
-        if (rtc->hasLast)
-        {
-            t.add("last_cycle_ms", rtc->cycle_ms);
-            t.add("last_refresh_ms", rtc->refresh_ms);
-            t.add("last_decode_transfer_ms", rtc->decode_transfer_ms);
-            t.add("last_radio_on_ms", rtc->radio_on_ms);
-        }
-        t.add("deferred_cycles", rtc->deferred_cycles);
-        rtc->hasLast = false;           // consumed — don't resend if this errors out
-        rtc->deferred_cycles = 0;
-        iot.telemetry.post("epaper", t);
+        // Adds the previous cycle's end-of-cycle phases (last_*), see below.
+        iot.telemetry.post("epaper", t, rtc->next);
 
         // Radio off (the single biggest saving) and the LED with it. Flushes the
         // log first; later lines are kept in RTC RAM and sent next cycle.
@@ -472,8 +440,7 @@ void setup()
         // Nothing to refresh. Housekeeping still runs once so a new firmware
         // version can publish its schema even when the image is unchanged.
         logger.info(LOG_TAG, "image unchanged (304), keeping current frame");
-        commitImageValidators(img.validators); // a 304 may resend them
-        rtc->deferred_cycles += 1; // keep prior last_* intact; just count
+        rtc->image.commit(img.validators); // a 304 may resend them
         housekeeping();
     }
     else if (img.result.isOk() && !img.body.empty())
@@ -484,7 +451,7 @@ void setup()
             buildStatus(), housekeeping);
         if (ok)
         {
-            commitImageValidators(img.validators);
+            rtc->image.commit(img.validators);
         }
         else
         {
@@ -517,15 +484,14 @@ void setup()
 
     // A rendered cycle's end-of-cycle phase durations are only complete now
     // (after the refresh); buffer them in RTC RAM so the NEXT cycle reports them
-    // as last_* instead of us staying awake with WiFi on to send them. (The 304
-    // path counted itself above; error paths already deep-slept.)
+    // as last_* instead of us staying awake with WiFi on to send them. (Error
+    // paths already deep-slept.)
     if (displayed)
     {
-        rtc->hasLast = true;
-        rtc->refresh_ms = (int32_t)displayRenderer.lastRefreshMs();
-        rtc->decode_transfer_ms = (int32_t)displayRenderer.lastDecodeTransferMs();
-        rtc->radio_on_ms = (int32_t)radioOnMs;
-        rtc->cycle_ms = (int32_t)(millis() - tBoot);
+        rtc->next.add("cycle_ms", (int32_t)(millis() - tBoot));
+        rtc->next.add("refresh_ms", (int32_t)displayRenderer.lastRefreshMs());
+        rtc->next.add("decode_transfer_ms", (int32_t)displayRenderer.lastDecodeTransferMs());
+        rtc->next.add("radio_on_ms", (int32_t)radioOnMs);
 
         // One-line phase summary (kept in RTC RAM, uploaded next cycle; the
         // durations also ship in telemetry as last_*).

@@ -231,18 +231,19 @@ Everything flows through nice4iot:
 - **App telemetry** (`kind = "epaper"`), sent in the refresh overlap. Live:
   `connect_ms`, `net_ms`, `active_ms`, `image_status`, `image_bytes`,
   `image_maxage_s`, `displayed`, `heap_free`, `sleep_s`, `panel` (active id),
-  `supported_panels` (compiled-in panel ids). From the previous cycle (buffered in RTC RAM,
-  since they only complete after the refresh / WiFi-off): `last_cycle_ms`,
-  `last_refresh_ms`, `last_decode_transfer_ms`, `last_radio_on_ms` (WiFi-on
-  window — the dominant energy metric), and `deferred_cycles` (`304` wakes since
-  the last refresh-cycle POST). Together these let the phase durations be
-  reconstructed without the serial log.
+  `supported_panels` (compiled-in panel ids). From the previous rendering cycle
+  (arduino4iot's `IotRtcTelemetry` in RTC RAM, since they only complete after
+  the refresh / WiFi-off): `last_cycle_ms`, `last_refresh_ms`,
+  `last_decode_transfer_ms`, `last_radio_on_ms` (WiFi-on window — the dominant
+  energy metric). Together these let the phase durations be reconstructed
+  without the serial log.
 - **Serial phase markers** — `panel refresh: start` / `… done in X ms`, `WiFi off
   — radio on for X ms`, and an end-of-cycle `cycle phases [ms]: connect=… net=…
   decode_transfer=… refresh=… radio_on=… active=…` summary.
 - **Logging** — buffered, flushed by `iot.radioOff()` in the overlap; lines
   logged after WiFi off (or while offline) are kept in RTC RAM and sent with the
-  next cycle.
+  next connected cycle. The buffer is raised to 4 KB (`IOT_RTC_LOG_SIZE` in
+  `platformio.ini`), about 15 wakes without WiFi.
 
 ### Memory & paging
 
@@ -285,7 +286,7 @@ so **only its buffer** uses RAM. Firmware size (this build, all five panels,
   `image_path`.
 - **Device addresses its screen by its own name** — `{device}` → screen via
   `aliases.json`; re-point server-side without reflashing.
-- **Image validators in RTC RAM** (`IotRtcSlot`, survives deep sleep and
+- **Image validators in RTC RAM** (`IotRtcValidators` in an `IotRtcSlot`, survives deep sleep and
   watchdog resets) — sent as `If-None-Match`/`If-Modified-Since`; `304` skips
   the redraw, the single biggest energy saving.
 - **Paged rendering, budget-sized** — see [Memory & paging](#memory--paging); a
