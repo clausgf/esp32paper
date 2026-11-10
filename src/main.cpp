@@ -24,6 +24,7 @@
 #include <Arduino.h>
 #include <esp_heap_caps.h>
 #include <iot.h>
+#include <iot_idf_http.h>
 #include <iot_esp_ports.h>
 #include <iot_rtc_slot.h>
 
@@ -97,6 +98,11 @@ static IotConfigValue<int32_t> cvFwCheck(config, 3600, "fw_check_s",
 // (no/invalid image). Earlier failures use the library's panic backoff.
 static const int32_t ERROR_RETRY_S = 15 * 60;
 
+// Deadline for a whole request (arduino4iot's default: 60 s). The image comes
+// from the LAN in a few seconds; a server that trickles its response should not
+// keep the radio on for a minute. The watchdog is fed while data arrives.
+static const uint32_t REQUEST_DEADLINE_MS = 30000;
+
 // Task watchdog timeout. arduino4iot's default (20 s) is too short for a slow
 // WiFi association plus a TLS request on a weak link.
 static const int32_t WATCHDOG_TIMEOUT_S = 30;
@@ -120,6 +126,16 @@ struct AppRtcState
     // was rendered, or an error page replaced it (then `image` is empty).
     // 0 = unknown (RTC state lost, or no wall clock yet).
     int64_t shownEpoch;
+
+    // Failures since the last successful epaper telemetry post, reported with
+    // it (fail_* keys): a failing cycle often cannot send anything itself.
+    // failStep is a FailStep, failPhase an IotTransportPhase, failStatus the
+    // HTTP status or the negative transport error of the last failure.
+    int32_t failCount;
+    int32_t failStep;
+    int32_t failPhase;
+    int32_t failStatus;
+    int64_t failEpoch; // unix s of the last failure, 0 = unknown
 
     // Phase durations only known at the very end of a cycle (after the refresh,
     // radio off), posted with the NEXT cycle's telemetry as last_<key>.
@@ -245,6 +261,39 @@ static String resultText(const IotResult &r)
     return String(api.errorText(r).c_str());
 }
 
+// What a failed transport step most likely means, for the error screen. The
+// phase comes from arduino4iot's adapter, so it is exact, not guessed.
+static String transportHint(const IotResult &r)
+{
+    switch (r.transportError)
+    {
+    case IotIdfHttp::ERROR_INVALID_URL:
+        return "The API URL is invalid.\nCheck it in settings.h.";
+    case IotIdfHttp::ERROR_NO_SERVER_TRUST:
+        return "No TLS server trust configured.\nSeed a CA certificate or\nthe certificate bundle.";
+    case IotIdfHttp::ERROR_RESPONSE_TIMEOUT:
+        return "The server answers too slowly.\nCheck the server load.";
+    default:
+        break;
+    }
+    switch (r.phase)
+    {
+    case IotTransportPhase::Dns:
+        return "Server name not found.\nCheck the API URL and DNS.";
+    case IotTransportPhase::Connect:
+        return "Server unreachable.\nCheck the network and that\nthe server is running.";
+    case IotTransportPhase::Tls:
+        return r.tlsError != 0
+                   ? "TLS handshake rejected.\nCheck the server certificate\nand the TLS trust settings."
+                   : "No TLS answer from the server.\nCheck the port in the API URL.";
+    case IotTransportPhase::Send:
+    case IotTransportPhase::Receive:
+        return "The server does not respond.\nCheck the server.";
+    default:
+        return "Check the API URL, TLS certificate\nand network.";
+    }
+}
+
 // Log a failed network step to nice4iot (no-op on success/304).
 static void logIfFailed(const IotResult &r, const char *what)
 {
@@ -267,10 +316,34 @@ static int64_t wallClock_s()
     return now > 1600000000 ? now : 0; // before 2020: not synchronized
 }
 
-// Showstopper: log it to nice4iot, run `beforeRadioOff` (e.g. housekeeping),
-// switch the radio off (flushing the log) and show it as a full-screen error.
-// The caller decides how long to sleep.
-static void failureScreen(ErrorIcon icon, const String &title, const String &message,
+// Where a cycle failed; reported as fail_step (numbers are stable, see README).
+enum class FailStep : int32_t
+{
+    None = 0,
+    Wifi = 1,           // WiFi not joined
+    Provisioning = 2,   // device token not obtained
+    ImageTransport = 3, // image GET: no connection / no complete response
+    ImageHttp = 4,      // image GET: HTTP error (e.g. 404)
+    ImageEmpty = 5,     // image GET: 200 without a body
+    ImageInvalid = 6,   // not a PNG, or the wrong size for the panel
+    Render = 7,         // decode/render failed (memory, corrupt PNG)
+};
+
+// Remember a failure in RTC RAM for the next telemetry post (fail_* keys).
+static void recordFailure(FailStep step, const IotResult *cause)
+{
+    rtc->failCount++;
+    rtc->failStep = (int32_t)step;
+    rtc->failPhase = cause ? (int32_t)cause->phase : 0;
+    rtc->failStatus = cause ? cause->code() : 0;
+    rtc->failEpoch = wallClock_s();
+}
+
+// Showstopper: record it (fail_*), log it to nice4iot, run `beforeRadioOff`
+// (e.g. housekeeping), switch the radio off (flushing the log) and show it as a
+// full-screen error. The caller decides how long to sleep.
+static void failureScreen(FailStep step, const IotResult *cause, ErrorIcon icon,
+                          const String &title, const String &message,
                           const std::function<void()> &beforeRadioOff = {},
                           const DisplayStatus *status = nullptr)
 {
@@ -278,7 +351,8 @@ static void failureScreen(ErrorIcon icon, const String &title, const String &mes
     const DisplayStatus st = status ? *status : buildStatus();
     logger.error(LOG_TAG, "%s — %s", title.c_str(), message.c_str()); // logger joins lines
     if (beforeRadioOff)
-        beforeRadioOff();
+        beforeRadioOff(); // may post telemetry: record this failure after it
+    recordFailure(step, cause);
     radioOff();
     displayRenderer.showError(icon, title, message, st);
     // The error page replaced the image: forget its validators, so the next
@@ -291,10 +365,10 @@ static void failureScreen(ErrorIcon icon, const String &title, const String &mes
 // Showstopper before the server is usable (no WiFi, provisioning): as above,
 // then panic into the library's escalating backoff
 // (panic_init_s/panic_factor/panic_max_s).
-[[noreturn]] static void panicScreen(ErrorIcon icon, const String &title,
-                                     const String &message)
+[[noreturn]] static void panicScreen(FailStep step, const IotResult *cause, ErrorIcon icon,
+                                     const String &title, const String &message)
 {
-    failureScreen(icon, title, message);
+    failureScreen(step, cause, icon, title, message);
     iot.panic("%s", title.c_str()); // the details were logged above
     while (true) {} // never reached
 }
@@ -387,11 +461,12 @@ void setup()
     //     panics on undervoltage. The config mirror is loaded from NVS even if
     //     the connect fails, so an error screen already uses the configured
     //     panel (compiled-in default on a fresh device). ---
+    api.setResponseTimeout_ms(REQUEST_DEADLINE_MS);
     iot.startWatchdog(WATCHDOG_TIMEOUT_S); // begin() keeps this timeout
     bool connected = iot.begin();
     applyDisplayConfig();
     if (!connected)
-        panicScreen(ErrorIcon::NoWifi, "No WiFi",
+        panicScreen(FailStep::Wifi, nullptr, ErrorIcon::NoWifi, "No WiFi",
                     "Could not join the WiFi network.\n\n"
                     "A new device must be seed-flashed once.\nRetrying shortly.");
     const unsigned long tConnect = millis(); // WiFi connect + NTP sync done
@@ -402,28 +477,28 @@ void setup()
     if (!prov)
     {
         if (prov.isTransportError())
-            panicScreen(ErrorIcon::NoWifi, "No server connection",
+            panicScreen(FailStep::Provisioning, &prov, ErrorIcon::NoWifi, "No server connection",
                         "Cannot reach the nice4iot server:\n" + resultText(prov) +
-                        "\n\nCheck the API URL, TLS certificate\nand network.");
+                        "\n\n" + transportHint(prov));
         else if (prov.httpStatus == IotResult::STATUS_NO_PROVISIONING_TOKEN)
-            panicScreen(ErrorIcon::Warning, "No provisioning token",
+            panicScreen(FailStep::Provisioning, &prov, ErrorIcon::Warning, "No provisioning token",
                         "No provisioning token is configured.\n\n"
                         "Set it in settings.h.");
         else if (prov.httpStatus == 403)
-            panicScreen(ErrorIcon::Warning, "Provisioning rejected",
+            panicScreen(FailStep::Provisioning, &prov, ErrorIcon::Warning, "Provisioning rejected",
                         "The server rejected this device.\n\n"
                         "Check the token, and that the device\n"
                         "is approved and active.");
         else if (prov.httpStatus == IotResult::STATUS_NOT_CONFIGURED)
-            panicScreen(ErrorIcon::Warning, "No API URL",
+            panicScreen(FailStep::Provisioning, &prov, ErrorIcon::Warning, "No API URL",
                         "No nice4iot API URL is configured.\n\n"
                         "Set it in settings.h.");
         else if (prov.httpStatus == IotResult::STATUS_MALFORMED_RESPONSE)
-            panicScreen(ErrorIcon::Warning, "Provisioning failed",
+            panicScreen(FailStep::Provisioning, &prov, ErrorIcon::Warning, "Provisioning failed",
                         "Unexpected response from the server.\n\n"
                         "Is this a nice4iot API URL?");
         else
-            panicScreen(ErrorIcon::Warning, "Provisioning failed",
+            panicScreen(FailStep::Provisioning, &prov, ErrorIcon::Warning, "Provisioning failed",
                         "The server returned " + resultText(prov) +
                         ".\n\nCheck the token and device approval.");
     }
@@ -540,8 +615,21 @@ void setup()
         t.add("sleep_s", sleep_s > 0 ? sleep_s : iot.lastSleepDuration_s());
         t.add("panel", displayRenderer.activePanel());        // active panel id
         t.add("supported_panels", displayRenderer.supportedPanels());   // compiled-in panels
+        // Failures since the last post (a failing cycle may not reach the
+        // server); fail_count is sent always, the details only after one.
+        t.add("fail_count", rtc->failCount);
+        if (rtc->failCount > 0)
+        {
+            t.add("fail_step", rtc->failStep);
+            t.add("fail_phase", rtc->failPhase);
+            t.add("fail_status", rtc->failStatus);
+            t.add("fail_at", rtc->failEpoch);
+        }
         // Adds the previous cycle's end-of-cycle phases (last_*), see below.
-        logIfFailed(iot.telemetry.post("epaper", t, rtc->next), "epaper telemetry");
+        const IotResult posted = iot.telemetry.post("epaper", t, rtc->next);
+        logIfFailed(posted, "epaper telemetry");
+        if (posted)
+            rtc->failCount = 0; // reported
         iot.resetWatchdog();
         log_i("memory before WiFi off: %s", memorySummary().c_str());
         radioOff();
@@ -567,7 +655,7 @@ void setup()
             // up: log it and run housekeeping (its flush sends the error; its
             // config refresh matters, as a wrong panel in a stale cached config
             // is a likely cause and would otherwise never be replaced).
-            failureScreen(ErrorIcon::Warning, "Image error",
+            failureScreen(FailStep::ImageInvalid, nullptr, ErrorIcon::Warning, "Image error",
                           displayRenderer.renderErrorDetail(), housekeeping);
             iot.deepSleep(ERROR_RETRY_S);
         }
@@ -586,7 +674,7 @@ void setup()
             // WiFi is already off, so the error is kept in RTC RAM and sent
             // with the next cycle's log.
             displayed = false;
-            failureScreen(ErrorIcon::Warning, "Image error",
+            failureScreen(FailStep::Render, nullptr, ErrorIcon::Warning, "Image error",
                           displayRenderer.renderErrorDetail(), {}, &st);
             iot.deepSleep(ERROR_RETRY_S);
         }
@@ -594,22 +682,22 @@ void setup()
     else if (img.result.isTransportError())
     {
         // transport error (TLS/connection/timeout) — same class as provisioning
-        failureScreen(ErrorIcon::NoWifi, "No image server connection",
+        failureScreen(FailStep::ImageTransport, &img.result, ErrorIcon::NoWifi,
+                      "No image server connection",
                       "Cannot reach the nice4iot server\nfor image download:\n" +
-                      resultText(img.result) +
-                      "\n\nCheck the API URL, TLS certificate\nand network.");
+                      resultText(img.result) + "\n\n" + transportHint(img.result));
         iot.deepSleep(ERROR_RETRY_S);
     }
     else if (img.result.isOk())
     {
-        failureScreen(ErrorIcon::Warning, "Empty image",
+        failureScreen(FailStep::ImageEmpty, &img.result, ErrorIcon::Warning, "Empty image",
                       "The server sent an empty image.\n\n"
                       "Check the screen in nicepaper.");
         iot.deepSleep(ERROR_RETRY_S);
     }
     else
     {
-        failureScreen(ErrorIcon::Warning, "No image",
+        failureScreen(FailStep::ImageHttp, &img.result, ErrorIcon::Warning, "No image",
                       "Server responded: " + resultText(img.result) + ".\n\n"
                       "Is a screen assigned\nto this device?");
         iot.deepSleep(ERROR_RETRY_S);

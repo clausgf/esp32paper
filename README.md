@@ -80,7 +80,13 @@ reachable (no WiFi, provisioning) the device then panics into arduino4iot's
 escalating backoff (`panic_init_s`/`panic_factor`/`panic_max_s`); a missing or
 invalid image retries after a fixed 15 min. The message matches the cause — no WiFi, no
 server connection vs. provisioning rejected (classified from arduino4iot's typed
-`IotResult`), or a missing / invalid / wrong-sized image.
+`IotResult`), or a missing / invalid / wrong-sized image. A connection failure
+shows arduino4iot's one-line description (phase, TLS code, duration) and a
+hint for its phase: server name not found (DNS), server unreachable (connect),
+certificate rejected or no TLS answer (TLS), server not responding (send/receive).
+Every request ends after 30 s at most (`REQUEST_DEADLINE_MS`, below the
+library's 60 s default), so a server that trickles its response does not keep
+the radio on.
 
 ## Getting started
 
@@ -244,7 +250,8 @@ Everything flows through nice4iot:
   `image_maxage_s`, `displayed`, `heap_free` (internal), `heap_max_block`
   (largest internal block), `psram_free` (0 = no PSRAM), `sleep_s`, `panel` (active id),
   `supported_panels` (compiled-in panel ids), and what is on the panel:
-  `image_etag`, `shown_etag`, `shown_at` (see [What the panel shows](#what-the-panel-shows)). From the previous rendering cycle
+  `image_etag`, `shown_etag`, `shown_at` (see [What the panel shows](#what-the-panel-shows)),
+  and failures since the last post (see [Failure trail](#failure-trail)). From the previous rendering cycle
   (arduino4iot's `IotRtcTelemetry` in RTC RAM, since they only complete after
   the refresh / WiFi-off): `last_cycle_ms`, `last_refresh_ms`,
   `last_decode_transfer_ms`, `last_display_ms` (decode + transfer + refresh),
@@ -308,6 +315,23 @@ the content. To show what a display actually shows:
 4. **Show it** in the screen/device view: the image for `shown_etag` next to the
    current one, with `shown_at` and the time of the device's last telemetry
    (staleness = the device's sleep interval).
+
+### Failure trail
+
+A failing cycle often cannot report itself (no WiFi, no server, or WiFi already
+off). Each failure is therefore kept in RTC RAM and sent with the next
+successful `epaper` post, which then resets the count:
+
+| Key | Meaning |
+|---|---|
+| `fail_count` | failed cycles since the last post (always sent; 0 = none) |
+| `fail_step` | where the last one failed: 1 WiFi, 2 provisioning, 3 image connection, 4 image HTTP error, 5 empty image, 6 invalid image (not a PNG / wrong size), 7 render (memory, corrupt PNG) |
+| `fail_phase` | transport phase: 0 none, 1 DNS, 2 connect, 3 TLS, 4 send, 5 receive |
+| `fail_status` | HTTP status, or the negative transport error (e.g. -1 connect, -11 read timeout, -100 response deadline) |
+| `fail_at` | unix time (s) of the last failure, 0 = unknown |
+
+The `fail_*` details are only sent when `fail_count` > 0. Lost with the RTC
+state on a power loss.
 
 ### Memory & paging
 
@@ -456,8 +480,15 @@ isn't worth it.
       divider on GPIO34; set `BATTERY_PIN = -1` if unused.
 - [ ] **Overlay vs. server indicators** — nicepaper may draw its own; make the
       overlay config-toggleable or use a reserved corner.
-- [ ] **Repeated error screens** — each retry redraws the same error page;
-      consider suppressing repeat redraws (track the last error in RTC RAM).
+- [ ] **Keep the last image on transient failures.** Timeouts, lost
+      connections, DNS and connect failures (`IotResult::phase`) should keep the
+      image and retry with a short, growing interval (e.g. 2/4/8 min); show the
+      error page only after N failures in a row or when the image is older than
+      X. Saves a refresh per failure and avoids an error page for a short outage.
+      Also suppresses repeat redraws of the same error page.
+- [ ] **Retry permanent failures less often.** A rejected certificate
+      (`tlsError`), 403 or 404 are configuration errors: show them at once, but
+      retry after e.g. 1 h instead of 15 min to save the battery.
 - [ ] **Localisation** — only two error icons; English strings are hardcoded.
 - [ ] **Partial refresh** — always full-window; partial updates could cut
       refresh time/power for small changes.
