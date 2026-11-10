@@ -243,7 +243,8 @@ Everything flows through nice4iot:
   `boot_ms`, `connect_ms`, `provisioning_ms`, `config_ms`, `fetch_ms`, `image_status`, `image_bytes`,
   `image_maxage_s`, `displayed`, `heap_free` (internal), `heap_max_block`
   (largest internal block), `psram_free` (0 = no PSRAM), `sleep_s`, `panel` (active id),
-  `supported_panels` (compiled-in panel ids). From the previous rendering cycle
+  `supported_panels` (compiled-in panel ids), and what is on the panel:
+  `image_etag`, `shown_etag`, `shown_at` (see [What the panel shows](#what-the-panel-shows)). From the previous rendering cycle
   (arduino4iot's `IotRtcTelemetry` in RTC RAM, since they only complete after
   the refresh / WiFi-off): `last_cycle_ms`, `last_refresh_ms`,
   `last_decode_transfer_ms`, `last_display_ms` (decode + transfer + refresh),
@@ -263,6 +264,51 @@ Everything flows through nice4iot:
   The buffer is raised to 6.5 KB (`IOT_RTC_LOG_SIZE` in `platformio.ini`),
   about 20 wakes without WiFi.
 
+### What the panel shows
+
+The firmware cannot read the panel back, but it knows which image it last
+rendered. Each cycle's `epaper` telemetry carries, as of the start of the cycle:
+
+| Key | Type | Meaning |
+|---|---|---|
+| `image_etag` | label | ETag of the image response this cycle (200 or 304) |
+| `shown_etag` | label | ETag of the image on the panel. Committed only after a successful render; cleared when an error page replaces it and after a power loss (RTC state lost). nice4iot drops empty labels, so then the key is absent. |
+| `shown_at` | number | Unix time (s) of the last change of the panel content: image rendered or error page shown. 0 = unknown (power loss, no clock). |
+| `displayed` | number | 1 = this cycle is about to render `image_etag` |
+
+The telemetry is sent before the render (WiFi is off during it), so a render in
+cycle *n* is only confirmed by `shown_etag` in cycle *n+1*. A render failure or
+error page shows up as `shown_etag` missing with `shown_at` > 0, plus the error in
+the log. After an error page the image validators are cleared, so the next
+cycle fetches (200) and renders the image again instead of keeping the error
+page on a 304.
+
+**What nicepaper has to do.** Its ETag is already the SHA-256 of the served
+image plus palette (`extensions/epaper/core/imagecache.py`), so it identifies
+the content. To show what a display actually shows:
+
+1. **Keep served image versions.** The image cache keeps only the current image
+   per screen (`put_data()` deletes the old PNGs). Keep at least the versions
+   still referenced by a device, keyed by ETag (`<etag>.png`, or a thumbnail),
+   e.g. the last few per screen, or every ETag that is some device's
+   `shown_etag`.
+2. **Record what it served.** Per device: ETag, time and status of the last
+   200 response (optional — `image_etag` in the telemetry carries the same).
+3. **Read the device telemetry** (`epaper` kind, latest record per device from
+   nice4iot) and derive the state:
+   - `shown_etag` == current screen ETag → up to date, since `shown_at`.
+   - `shown_etag` == an older kept ETag → shows that version; if `displayed`
+     = 1 and `image_etag` is current, the new one is being rendered now
+     (confirmed next cycle).
+   - `shown_etag` absent, `shown_at` > 0 → error page since `shown_at` (details
+     in the device log).
+   - `shown_etag` absent, `shown_at` = 0 → unknown (power loss); resolved by
+     the next render, which follows immediately since the device then fetches
+     without validators.
+4. **Show it** in the screen/device view: the image for `shown_etag` next to the
+   current one, with `shown_at` and the time of the device's last telemetry
+   (staleness = the device's sleep interval).
+
 ### Memory & paging
 
 GxEPD2's page buffer is an instance member whose `page_height` is a
@@ -271,8 +317,8 @@ from a byte budget (`EPAPER_PAGE_BYTES` in `platformio.ini`, default 16 KB in
 `src/config.h`); the page height is derived from it and capped at the full
 frame. Each page re-decodes the PNG up to its last row, so with N pages a
 render costs about (N+1)/2 full decodes. Rendering runs after WiFi off, so the
-render peak is the compressed PNG + pngle (~36 KB, embeds the 32 KB DEFLATE
-window) + the page buffer, without TLS. Only the runtime-selected panel is
+render peak is the compressed PNG + pngle (~44 KB in one block: 32 KB DEFLATE
+window + ~11 KB inflator) + the page buffer, without TLS. Only the runtime-selected panel is
 `new`'d (`std::nothrow`: a buffer that does not fit is logged and reported as
 an image error instead of crashing).
 
@@ -281,17 +327,20 @@ an image error instead of crashing).
   (`CONFIG_SPIRAM_USE_MALLOC`); measured on the 7.3" Spectra 6: the 192 KB
   buffer lands in PSRAM, decode + transfer ~0.93 s (12 pages: ~7–8 s, before
   the per-page decode stop ~11 s).
-- **Waveshare ESP32 (no PSRAM):** default 16 KB. Not measured on that board yet;
-  raise it as far as the free internal heap after WiFi off allows (pngle still
-  has to fit).
+- **Waveshare ESP32 (no PSRAM):** `EPAPER_PAGE_BYTES=49152`. Measured after
+  WiFi off: 239 KB internal heap free, largest block 102 KB, all others
+  <= 35 KB. The page buffer and pngle (~44 KB) have to share that block, so
+  pages above ~58 KB fail (a 64 KB page left 35 KB); 48 KB leaves 53–55 KB.
+  7.5" b/w GDEW075T7 renders in one pass: decode + transfer 0.9 s, refresh
+  5.5 s (at 16 KB / 3 pages: 2.4 s and 7.5 s).
 
-| Panel | full bitmap | bytes/row | pages @16 KB |
-|---|---|---|---|
-| 4.2" b/w 400×300 | 15 KB | 50 | 1 (full) |
-| 7.5" b/w 800×480 | 48 KB | 100 | 4 |
-| 7.5" b/w/red 800×480 | 96 KB (2 planes) | 200 | 6 |
-| 7.3" Spectra 6 800×480 | 192 KB (4 bpp) | 400 | 12 |
-| 7.3" ACeP 7c 800×480 | 192 KB (4 bpp) | 400 | 12 |
+| Panel | full bitmap | bytes/row | pages @16 KB | pages @48 KB |
+|---|---|---|---|---|
+| 4.2" b/w 400×300 | 15 KB | 50 | 1 (full) | 1 (full) |
+| 7.5" b/w 800×480 | 48 KB | 100 | 3 | 1 (full) |
+| 7.5" b/w/red 800×480 | 96 KB (2 planes) | 200 | 6 | 2 |
+| 7.3" Spectra 6 800×480 | 192 KB (4 bpp) | 400 | 12 | 4 |
+| 7.3" ACeP 7c 800×480 | 192 KB (4 bpp) | 400 | 12 | 4 |
 
 Measured on the XIAO: WiFi off frees ~67 KB internal heap (218 → 285 KB free;
 largest block 151 KB either way).
@@ -399,8 +448,6 @@ isn't worth it.
 - [ ] **Confirm the extension endpoint accepts the device bearer token.** If
       nice4iot gates it only via per-project activation / `X-Api-Key` instead,
       switch to `iot.forward.getCached()` — `image_path` is configurable.
-- [ ] **Page budget for the Waveshare ESP32.** Measure the free internal heap
-      after WiFi off there and raise `EPAPER_PAGE_BYTES` for its env.
 - [ ] **Long refresh on the first cycle after flashing.** Seen 3× (refresh
       ~46–47 s, i.e. the 45 s BUSY timeout), not on other first cycles; cause
       unknown.

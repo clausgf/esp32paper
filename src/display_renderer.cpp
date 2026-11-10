@@ -343,11 +343,11 @@ bool DisplayRenderer::renderImage(const uint8_t *png, size_t len,
     log_i("render '%s': %d page(s) x %d rows; %s", _panelId.c_str(),
           gx->pages(), gx->pageHeight(), memorySummary().c_str());
 
-    // pngle's state (~36 KB incl. the 32 KB DEFLATE window) is allocated per
-    // decode; bail out on a clearly insufficient heap rather than failing
-    // halfway through the pages.
+    // pngle_t (~44 KB in one block: 32 KB DEFLATE window + ~11 KB inflator,
+    // lib/pngle/pngle.c) is allocated per decode; bail out on a clearly
+    // insufficient heap rather than failing halfway through the pages.
     const size_t largest = heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
-    if (largest < 40 * 1024)
+    if (largest < 44 * 1024)
     {
         log_e("insufficient heap to decode the PNG: %s", memorySummary().c_str());
         _renderErrorDetail = String("Not enough memory\nto decode the PNG (") +

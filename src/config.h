@@ -105,7 +105,7 @@ static const int BATTERY_MIN_MV   = 3300; // undervoltage shutdown threshold
 // per-panel page height is derived from it, capped at the full frame. Each
 // page re-decodes the PNG up to its last row, so larger is faster. Rendering
 // runs with WiFi off, so the budget may use most of the free heap as long as
-// the PNG decoder (~36 KB) still fits; with PSRAM the full frame fits.
+// the PNG decoder (~44 KB contiguous) still fits; with PSRAM the full frame fits.
 #ifndef EPAPER_PAGE_BYTES
 #define EPAPER_PAGE_BYTES 16384
 #endif
